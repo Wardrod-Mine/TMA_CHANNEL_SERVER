@@ -179,6 +179,31 @@ bot.on('message', async (ctx) => {
   if ('text' in ctx.message) return;     // игнор обычных сообщений
 });
 
+const express = require('express');
+const app = express();
+
+app.use(express.json());
+
+app.use(bot.webhookCallback('/bot'));
+
+app.get('/', (req, res) => {
+  res.send('Bot is running');
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, async () => {
+  console.log(`🚀 Server running on port ${PORT}`);
+
+  // Установим вебхук
+  const webhookUrl = `${process.env.APP_URL}/bot`;
+  try {
+    await bot.telegram.setWebhook(webhookUrl);
+    console.log(`✅ Webhook set to ${webhookUrl}`);
+  } catch (e) {
+    console.error('❌ Failed to set webhook:', e.message);
+  }
+});
+
 bot.launch();
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
