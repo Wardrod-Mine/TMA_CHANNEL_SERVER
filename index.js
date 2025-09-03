@@ -2,7 +2,8 @@
 require('dotenv').config();
 const { Telegraf, Markup } = require('telegraf');
 const { message } = require('telegraf/filters');
-
+const express = require('express');
+const app = express();
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const APP_URL   = process.env.APP_URL;
 
@@ -182,8 +183,7 @@ app.get('/debug', async (req, res) => {
   }
 });
 
-const express = require('express');
-const app = express();
+
 
 app.use(express.json());
 
