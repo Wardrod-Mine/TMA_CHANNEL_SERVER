@@ -193,8 +193,6 @@ app.get('/', (req, res) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, async () => {
   console.log(`🚀 Server running on port ${PORT}`);
-
-  // Установим вебхук
   const webhookUrl = `${process.env.APP_URL}/bot`;
   try {
     await bot.telegram.setWebhook(webhookUrl);
@@ -204,6 +202,6 @@ app.listen(PORT, async () => {
   }
 });
 
-bot.launch();
+
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
