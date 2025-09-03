@@ -21,12 +21,6 @@ if (!APP_URL)   console.warn('APP_URL не задан: кнопка web_app не
 
 const bot = new Telegraf(BOT_TOKEN);
 
-(async () => {
-  const me = await bot.telegram.getMe();
-  console.log('[bot] logged in as @' + me.username, 'id=', me.id);
-  console.log('[bot] ADMIN_CHAT_IDS =', ADMIN_CHAT_IDS);
-})();
-
 bot.command('test_admin', async (ctx) => {
   const ok = await notifyAdmins(ctx, '<b>Тест сообщения администратору</b>',);
   ctx.reply(ok ? 'Ок — администратору отправлено ✅' : 'Не удалось отправить администратору ❗️', { parse_mode:'HTML' });
@@ -179,6 +173,15 @@ bot.on('message', async (ctx) => {
   if ('text' in ctx.message) return;     // игнор обычных сообщений
 });
 
+app.get('/debug', async (req, res) => {
+  try {
+    const info = await bot.telegram.getWebhookInfo();
+    res.json(info);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 const express = require('express');
 const app = express();
 
@@ -197,10 +200,15 @@ app.listen(PORT, async () => {
   try {
     await bot.telegram.setWebhook(webhookUrl);
     console.log(`✅ Webhook set to ${webhookUrl}`);
+
+    const me = await bot.telegram.getMe();
+    console.log('[bot] logged in as @' + me.username, 'id=', me.id);
+    console.log('[bot] ADMIN_CHAT_IDS =', ADMIN_CHAT_IDS);
   } catch (e) {
-    console.error('❌ Failed to set webhook:', e.message);
+    console.error('❌ Failed to set webhook or get bot info:', e.message);
   }
 });
+
 
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
