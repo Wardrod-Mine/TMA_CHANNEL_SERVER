@@ -24,8 +24,49 @@ const ADMIN_THREAD_ID = process.env.ADMIN_THREAD_ID ? Number(process.env.ADMIN_T
 
 const bot = new Telegraf(BOT_TOKEN);
 
+// === комманды(/start, /publish) ===
 bot.start((ctx) => {
-  return ctx.reply('📂 Добро пожаловать! Нажмите кнопку каталог, чтобы открыть мини-приложение')
+  return ctx.reply('📂 Добро пожаловать! Нажмите кнопку ниже, чтобы открыть каталог услуг:', {
+    reply_markup: {
+      inline_keyboard: [
+        [
+          {
+            text: 'Магазин решений',
+            web_app: { url: FRONTEND_URL } 
+          }
+        ]
+      ]
+    }
+  });
+});
+
+bot.command('publish', async (ctx) => {
+  if (!ADMIN_CHAT_IDS.includes(String(ctx.from.id))) {
+    return ctx.reply('⛔ Недостаточно прав для публикации.');
+  }
+
+  const channel = process.env.CHANNEL_ID;      
+  const frontUrl = process.env.FRONTEND_URL;   
+  const me = await ctx.telegram.getMe();     
+  const botUsername = me.username;         
+
+  const postText = `<b>🔥Мы запустили мини-приложение прямо в Telegram🔥 </b>
+Больше не нужно писать вручную или искать куда написать — просто выбирай услугу в каталоге и оставляй заявку! 👇`;
+
+  const inlineKeyboardForChannel = [
+    [{ text: 'Каталог', url: `https://t.me/${botUsername}/${frontUrl ? `?startapp=catalog` : ''}` }]
+  ];
+
+  try {
+    await ctx.telegram.sendMessage(channel, postText, {
+      parse_mode: 'HTML',
+      disable_web_page_preview: true,
+      reply_markup: { inline_keyboard: inlineKeyboardForChannel }
+    });
+    await ctx.reply('✅ Пост с кнопкой «Каталог» опубликован в канал.');
+  } catch (e) {
+    await ctx.reply('❌ Не удалось отправить пост: ' + (e.description || e.message));
+  }
 });
 
 // === утилиты ===
