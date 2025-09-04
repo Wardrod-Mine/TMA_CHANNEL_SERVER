@@ -134,6 +134,7 @@ bot.on(message('web_app_data'), async (ctx) => {
 });
 
 // === Express + webhook ===
+// === Express + webhook ===
 app.use(express.json());
 app.use(bot.webhookCallback('/bot'));
 
@@ -154,8 +155,14 @@ app.listen(PORT, async () => {
   if (APP_URL) {
     const webhookUrl = `${APP_URL}/bot`;
     try {
-      await bot.telegram.setWebhook(webhookUrl);
-      console.log(`✅ Webhook set to ${webhookUrl}`);
+      const info = await bot.telegram.getWebhookInfo();
+
+      if (info.url !== webhookUrl) {
+        await bot.telegram.setWebhook(webhookUrl);
+        console.log(`✅ Webhook установлен: ${webhookUrl}`);
+      } else {
+        console.log(`ℹ️ Webhook уже актуален: ${webhookUrl}`);
+      }
 
       const me = await bot.telegram.getMe();
       console.log(`[bot] logged in as @${me.username}, id=${me.id}`);
@@ -165,3 +172,4 @@ app.listen(PORT, async () => {
     }
   }
 });
+
