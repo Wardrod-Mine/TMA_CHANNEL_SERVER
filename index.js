@@ -24,14 +24,8 @@ const ADMIN_THREAD_ID = process.env.ADMIN_THREAD_ID ? Number(process.env.ADMIN_T
 
 const bot = new Telegraf(BOT_TOKEN);
 
-// === /start ===
 bot.start((ctx) => {
-  return ctx.reply('📂 Добро пожаловать! Нажмите кнопку ниже, чтобы открыть каталог услуг:', {
-    reply_markup: {
-      keyboard: [[{ text: 'Каталог', web_app: { url: FRONTEND_URL } }]],
-      resize_keyboard: true
-    }
-  });
+  return ctx.reply('📂 Добро пожаловать! Нажмите кнопку каталог, чтобы открыть мини-приложение')
 });
 
 // === утилиты ===
