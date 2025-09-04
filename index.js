@@ -151,6 +151,10 @@ bot.on(message('web_app_data'), async (ctx) => {
     : '❌ Не удалось доставить администратору.');
 });
 
+// === Express + webhook ===
+app.use(express.json());
+app.use(bot.webhookCallback('/bot'));
+
 app.post('/lead', async (req, res) => {
   try {
     const data = req.body;
@@ -193,9 +197,7 @@ app.post('/lead', async (req, res) => {
   }
 });
 
-// === Express + webhook ===
-app.use(express.json());
-app.use(bot.webhookCallback('/bot'));
+
 
 app.get('/', (req, res) => res.send('Bot is running'));
 app.get('/debug', async (req, res) => {
