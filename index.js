@@ -179,10 +179,7 @@ app.get('/debug', async (req, res) => {
   }
 });
 
-
-
 app.use(express.json());
-
 app.use(bot.webhookCallback('/bot'));
 
 app.get('/', (req, res) => {
@@ -204,8 +201,3 @@ app.listen(PORT, async () => {
     console.error('❌ Failed to set webhook or get bot info:', e.message);
   }
 });
-
-
-
-process.once('SIGINT', () => bot.stop('SIGINT'));
-process.once('SIGTERM', () => bot.stop('SIGTERM'));
