@@ -9,7 +9,7 @@ const APP_URL   = process.env.APP_URL;
 
 // поддержка одного или нескольких админ-чатов
 const ADMIN_CHAT_IDS = (process.env.ADMIN_CHAT_IDS || process.env.ADMIN_CHAT_ID || '')
-  .split(/[,\s]+/)          // через запятую или пробел
+  .split(/[,\s]+/)        
   .map(s => s.trim())
   .filter(Boolean)
   .map(Number)
@@ -27,21 +27,19 @@ bot.command('test_admin', async (ctx) => {
   ctx.reply(ok ? 'Ок — администратору отправлено ✅' : 'Не удалось отправить администратору ❗️', { parse_mode:'HTML' });
 });
 
-// /start с пейлоадом -> открываем ТМА на нужной карточке
-bot.start(async (ctx) => {
-  const payload = (ctx.startPayload || 'tma').trim();
-  const url = `${APP_URL}?tgWebAppStartParam=${encodeURIComponent(payload)}`;
-  await ctx.reply(
-    'Откройте мини-приложение:',
-    Markup.inlineKeyboard([[Markup.button.webApp('Открыть ТМА', url)]])
-  );
-});
-
-// сервис: быстро получить chat.id
 bot.command('id', (ctx) => ctx.reply(
   `chat.id: <code>${ctx.chat.id}</code>\nuser.id: <code>${ctx.from.id}</code>`, { parse_mode: 'HTML' }
 ));
 bot.command('ping', (ctx) => ctx.reply('pong'));
+
+bot.command('start', (ctx) => {
+  return ctx.reply('Открыть Mini App', {
+    reply_markup: {
+      keyboard: [[{ text: 'Запустить', web_app: { url: process.env.FRONTEND_URL } }]],
+      resize_keyboard: true
+    }
+  });
+});
 
 // утилиты форматирования
 const esc = (s) => String(s ?? '').replace(/[&<>]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
@@ -137,7 +135,7 @@ bot.on(message('web_app_data'), async (ctx) => {
     return ctx.reply(ok ? 'Заявка передана администратору ✅' : 'Не удалось доставить администратору ❗️');
   }
 
-  // ---- консультация (оставляем как есть) ----
+  // ---- консультация  ----
   if (data.action === 'consult') {
     const p = data.product?.title || 'Общая консультация';
     const html =
@@ -162,16 +160,14 @@ bot.on(message('web_app_data'), async (ctx) => {
     return ctx.reply(ok ? `Заявка (корзина) отправлена ✅\nОтправлено в: ${ADMIN_CHAT_IDS.join(', ') || ctx.chat.id}` : 'Не удалось доставить администратору ❗️');
   }
 
-  // всё остальное — как есть
   const html = `<b>📥 Данные из ТМА</b>\n<pre>${esc(JSON.stringify(data, null, 2))}</pre>\n\n<b>От:</b> ${who(ctx.from)}\n<b>Время:</b> ${esc(stamp)}`;
   const ok = await notifyAdmins(ctx, html);
   return ctx.reply(ok ? `Данные переданы администратору ✅\nОтправлено в: ${ADMIN_CHAT_IDS.join(', ') || ctx.chat.id}` : 'Не удалось доставить администратору ❗️');
 });
 
-// на всякий случай оставим общий приём message (если кто-то отправит не web_app_data)
 bot.on('message', async (ctx) => {
-  if (ctx.message?.web_app_data) return; // уже обработали выше
-  if ('text' in ctx.message) return;     // игнор обычных сообщений
+  if (ctx.message?.web_app_data) return; 
+  if ('text' in ctx.message) return;     
 });
 
 app.get('/debug', async (req, res) => {
