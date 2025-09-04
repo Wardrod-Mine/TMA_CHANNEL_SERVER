@@ -88,19 +88,55 @@ async function notifyAdmins(ctx, html) {
   let delivered = 0;
   for (const chatId of targets) {
     try {
+      console.log(`[notifyAdmins] sending → ${chatId}`);
       await ctx.telegram.sendMessage(chatId, html, extra);
-      console.log('[notifyAdmins] sent to', chatId);
+      console.log(`[notifyAdmins] success → ${chatId}`);
       delivered++;
     } catch (err) {
-      console.error('[notifyAdmins] error to', chatId, err.message);
+      console.error(`[notifyAdmins] failed → ${chatId}`, err.message);
     }
   }
   return delivered;
 }
 
+
 // === приём данных из WebApp ===
+// bot.on(message('web_app_data'), async (ctx) => {
+//   const raw = ctx.message.web_app_data?.data || '';
+//   console.log('\n====[web_app_data received]====');
+//   console.log('From user:', ctx.from?.id, ctx.from?.username);
+//   console.log('Raw payload:', raw);
+
+//   let data = null;
+//   try { data = JSON.parse(raw); }
+//   catch (e) { console.error('❌ Failed to parse JSON:', e.message); }
+
+//   if (!data) return ctx.reply('Данные не распознаны.');
+
+//   const stamp = new Date().toLocaleString('ru-RU');
+
+//   // Форматируем сообщение для админа
+//   const html = 
+//     `📄 <b>Заявка (форма)</b>\n` +
+//     `<b>Услуга:</b> ${fmt(data.service || data.product || '—')}\n` +
+//     `<b>Телефон:</b> ${fmt(data.phone)}\n` +
+//     `<b>Имя:</b> ${fmt(data.name)}\n` +
+//     (data.city ? `<b>Город:</b> ${fmt(data.city)}\n` : '') +
+//     (data.comment ? `<b>Комментарий:</b> ${fmt(data.comment)}\n` : '') +
+//     `\n<b>От:</b> ${esc(ctx.from.first_name || '')} ${esc(ctx.from.last_name || '')} ${ctx.from.username ? `(@${ctx.from.username})` : ''}\n` +
+//     `<b>Время:</b> ${esc(stamp)}`;
+
+//   const ok = await notifyAdmins(ctx, html);
+
+//   // Ответ пользователю (чтобы убрать серую надпись)
+//   return ctx.reply(ok 
+//     ? '✅ Заявка успешно передана администратору!' 
+//     : '⚠️ Ошибка при передаче заявки администратору.');
+// });
+
 bot.on(message('web_app_data'), async (ctx) => {
   console.log('\n==== [web_app_data received] ====');
+  console.log('[from.id]:', ctx.from?.id, 'username:', ctx.from?.username);
   console.log('[raw payload]:', ctx.message.web_app_data?.data);
 
   let data = null;
@@ -109,55 +145,29 @@ bot.on(message('web_app_data'), async (ctx) => {
     console.log('[parsed payload]:', data);
   } catch (err) {
     console.error('❌ JSON parse error:', err.message);
-    return ctx.reply('⚠️ Ошибка: не удалось разобрать данные формы.');
+  }
+
+  if (!data) {
+    console.warn('[handler] payload empty → reply to user');
+    return ctx.reply('⚠️ Ошибка: данные не распознаны.');
   }
 
   const stamp = new Date().toLocaleString('ru-RU');
-
   const html =
-    `📩 <b>Новая заявка из Mini App</b>\n\n` +
-    `<b>Имя:</b> ${data.name || '—'}\n` +
-    `<b>Телефон:</b> ${data.phone || '—'}\n` +
-    (data.service ? `<b>Услуга:</b> ${data.service}\n` : '') +
-    (data.comment ? `<b>Комментарий:</b> ${data.comment}\n` : '') +
-    `\n<b>Отправитель:</b> ${ctx.from.first_name || ''} ${ctx.from.last_name || ''} ${ctx.from.username ? `(@${ctx.from.username})` : ''}` +
-    `\n<b>Время:</b> ${stamp}`;
+    `<b>📥 Данные из ТМА</b>\n<pre>${esc(JSON.stringify(data, null, 2))}</pre>\n\n<b>От:</b> ${who(ctx.from)}\n<b>Время:</b> ${esc(stamp)}`;
 
-  console.log('[notifyAdmins] trying to send to:', ADMIN_CHAT_IDS);
+  console.log('[notifyAdmins] targets =', ADMIN_CHAT_IDS);
 
   const ok = await notifyAdmins(ctx, html);
 
-  console.log('[notifyAdmins] delivered count =', ok);
+  console.log('[notifyAdmins] delivered =', ok);
 
-  if (ok > 0) {
-    await ctx.reply('✅ Заявка успешно передана администратору!');
-  } else {
-    await ctx.reply('⚠️ Ошибка: не удалось доставить администратору.');
-  }
+  return ctx.reply(ok > 0
+    ? '✅ Данные переданы администратору!'
+    : '❌ Не удалось доставить администратору.');
 });
 
-async function notifyAdmins(ctx, html) {
-  if (!ADMIN_CHAT_IDS.length) {
-    console.warn('[notifyAdmins] ADMIN_CHAT_IDS is empty, fallback to ctx.chat.id');
-  }
 
-  const targets = ADMIN_CHAT_IDS.length ? ADMIN_CHAT_IDS : [ctx.chat.id];
-  const extra = { parse_mode: 'HTML', disable_web_page_preview: true };
-  if (ADMIN_THREAD_ID) extra.message_thread_id = ADMIN_THREAD_ID;
-
-  let delivered = 0;
-  for (const chatId of targets) {
-    try {
-      console.log(`[notifyAdmins] sending to ${chatId}...`);
-      await ctx.telegram.sendMessage(chatId, html, extra);
-      console.log(`[notifyAdmins] success -> ${chatId}`);
-      delivered++;
-    } catch (err) {
-      console.error(`[notifyAdmins] failed -> ${chatId}`, err.message);
-    }
-  }
-  return delivered;
-}
 
 // === Express + webhook ===
 app.use(express.json());
