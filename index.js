@@ -1,18 +1,17 @@
-// bot/index.js
+// index.js
 require('dotenv').config();
 const { Telegraf } = require('telegraf');
 const { message } = require('telegraf/filters');
 const express = require('express');
 const app = express();
 
-const BOT_TOKEN     = process.env.BOT_TOKEN;
-const APP_URL       = process.env.APP_URL;        // backend (Render server)
-const FRONTEND_URL  = process.env.FRONTEND_URL;   // frontend (Static site)
+const BOT_TOKEN = process.env.BOT_TOKEN;
+const APP_URL = process.env.APP_URL;
+const FRONTEND_URL = process.env.FRONTEND_URL;
 
 if (!BOT_TOKEN) throw new Error('Нет BOT_TOKEN в .env');
-if (!APP_URL)   console.warn('⚠️ APP_URL не задан — вебхук не установится');
+if (!APP_URL) console.warn('⚠️ APP_URL не задан — вебхук не установится');
 
-// поддержка одного или нескольких админ-чатов
 const ADMIN_CHAT_IDS = (process.env.ADMIN_CHAT_IDS || '')
   .split(/[,\s]+/)
   .map(s => s.trim())
@@ -24,59 +23,14 @@ const ADMIN_THREAD_ID = process.env.ADMIN_THREAD_ID ? Number(process.env.ADMIN_T
 
 const bot = new Telegraf(BOT_TOKEN);
 
-// === комманды(/start, /publish) ===
-bot.start((ctx) => {
-  return ctx.reply('📂 Добро пожаловать! Нажмите кнопку ниже, чтобы открыть каталог услуг:', {
-    reply_markup: {
-      inline_keyboard: [
-        [
-          {
-            text: 'Магазин решений',
-            web_app: { url: FRONTEND_URL } 
-          }
-        ]
-      ]
-    }
-  });
-});
-
-bot.command('publish', async (ctx) => {
-  if (!ADMIN_CHAT_IDS.includes(String(ctx.from.id))) {
-    return ctx.reply('⛔ Недостаточно прав для публикации.');
-  }
-
-  const channel = process.env.CHANNEL_ID;      
-  const frontUrl = process.env.FRONTEND_URL;   
-  const me = await ctx.telegram.getMe();     
-  const botUsername = me.username;         
-
-  const postText = `<b>🔥Мы запустили мини-приложение прямо в Telegram🔥 </b>
-Больше не нужно писать вручную или искать куда написать — просто выбирай услугу в каталоге и оставляй заявку! 👇`;
-
-  const inlineKeyboardForChannel = [
-    [{ text: 'Каталог', url: `https://t.me/${botUsername}/${frontUrl ? `?startapp=catalog` : ''}` }]
-  ];
-
-  try {
-    await ctx.telegram.sendMessage(channel, postText, {
-      parse_mode: 'HTML',
-      disable_web_page_preview: true,
-      reply_markup: { inline_keyboard: inlineKeyboardForChannel }
-    });
-    await ctx.reply('✅ Пост с кнопкой «Каталог» опубликован в канал.');
-  } catch (e) {
-    await ctx.reply('❌ Не удалось отправить пост: ' + (e.description || e.message));
-  }
-});
-
 // === утилиты ===
-const esc = (s) => String(s ?? '').replace(/[&<>]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+const esc = (s) => String(s ?? '').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
 const fmt = (v) => v ? esc(v) : '—';
 const who = (u) => {
   if (!u) return '—';
   const name = [u.first_name, u.last_name].filter(Boolean).join(' ');
   const un = u.username ? ` @${u.username}` : '';
-  return `${esc(name)}${un} (id: <code>${u.id}</code>)`;
+  return `${esc(name)}${un}`;
 };
 
 // === рассылка админам ===
@@ -99,41 +53,25 @@ async function notifyAdmins(ctx, html) {
   return delivered;
 }
 
+// === /start ===
+bot.start((ctx) => {
+  return ctx.reply('📂 Добро пожаловать! Нажмите кнопку ниже, чтобы открыть каталог услуг:', {
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: 'Каталог', web_app: { url: FRONTEND_URL } }]
+      ]
+    }
+  });
+});
+
+// === test_admin ===
+bot.command('test_admin', async (ctx) => {
+  const html = `<b>🔔 Тестовое сообщение</b>\n\nОт: ${who(ctx.from)}`;
+  const ok = await notifyAdmins(ctx, html);
+  return ctx.reply(ok > 0 ? `✅ Доставлено ${ok} админу(ам)` : '❌ Не удалось доставить');
+});
 
 // === приём данных из WebApp ===
-// bot.on(message('web_app_data'), async (ctx) => {
-//   const raw = ctx.message.web_app_data?.data || '';
-//   console.log('\n====[web_app_data received]====');
-//   console.log('From user:', ctx.from?.id, ctx.from?.username);
-//   console.log('Raw payload:', raw);
-
-//   let data = null;
-//   try { data = JSON.parse(raw); }
-//   catch (e) { console.error('❌ Failed to parse JSON:', e.message); }
-
-//   if (!data) return ctx.reply('Данные не распознаны.');
-
-//   const stamp = new Date().toLocaleString('ru-RU');
-
-//   // Форматируем сообщение для админа
-//   const html = 
-//     `📄 <b>Заявка (форма)</b>\n` +
-//     `<b>Услуга:</b> ${fmt(data.service || data.product || '—')}\n` +
-//     `<b>Телефон:</b> ${fmt(data.phone)}\n` +
-//     `<b>Имя:</b> ${fmt(data.name)}\n` +
-//     (data.city ? `<b>Город:</b> ${fmt(data.city)}\n` : '') +
-//     (data.comment ? `<b>Комментарий:</b> ${fmt(data.comment)}\n` : '') +
-//     `\n<b>От:</b> ${esc(ctx.from.first_name || '')} ${esc(ctx.from.last_name || '')} ${ctx.from.username ? `(@${ctx.from.username})` : ''}\n` +
-//     `<b>Время:</b> ${esc(stamp)}`;
-
-//   const ok = await notifyAdmins(ctx, html);
-
-//   // Ответ пользователю (чтобы убрать серую надпись)
-//   return ctx.reply(ok 
-//     ? '✅ Заявка успешно передана администратору!' 
-//     : '⚠️ Ошибка при передаче заявки администратору.');
-// });
-
 bot.on(message('web_app_data'), async (ctx) => {
   console.log('\n==== [web_app_data received] ====');
   console.log('[from.id]:', ctx.from?.id, 'username:', ctx.from?.username);
@@ -153,21 +91,47 @@ bot.on(message('web_app_data'), async (ctx) => {
   }
 
   const stamp = new Date().toLocaleString('ru-RU');
-  const html =
-    `<b>📥 Данные из ТМА</b>\n<pre>${esc(JSON.stringify(data, null, 2))}</pre>\n\n<b>От:</b> ${who(ctx.from)}\n<b>Время:</b> ${esc(stamp)}`;
+  let html = '';
 
-  console.log('[notifyAdmins] targets =', ADMIN_CHAT_IDS);
+  // === разные типы заявок ===
+  if (data.action === 'send_request' || data.action === 'send_request_form') {
+    html =
+      `📄 <b>Заявка (форма)</b>\n` +
+      `<b>Имя:</b> ${fmt(data.name)}\n` +
+      `<b>Телефон:</b> ${fmt(data.phone)}\n` +
+      (data.city ? `<b>Город:</b> ${fmt(data.city)}\n` : '') +
+      (data.comment ? `<b>Комментарий:</b> ${fmt(data.comment)}\n` : '');
+  } else if (data.type === 'lead' || data.action === 'consult') {
+    html =
+      `💬 <b>Запрос консультации</b>\n` +
+      `<b>Имя:</b> ${fmt(data.name)}\n` +
+      `<b>Телефон:</b> ${fmt(data.phone)}\n` +
+      (data.comment ? `<b>Комментарий:</b> ${fmt(data.comment)}\n` : '');
+  } else if (data.action === 'send_cart') {
+    html =
+      `🛒 <b>Заявка (корзина)</b>\n` +
+      `<b>Имя:</b> ${fmt(data.name)}\n` +
+      `<b>Телефон:</b> ${fmt(data.phone)}\n` +
+      `<b>Город:</b> ${fmt(data.city)}\n\n` +
+      `<b>Состав корзины:</b>\n${(data.cart || []).map((item, i) =>
+        `${i + 1}. ${esc(item.name)} (x${item.qty}) — ${esc(item.price)}`
+      ).join('\n')}`;
+  } else {
+    html =
+      `📥 <b>Данные из ТМА</b>\n` +
+      `<pre>${esc(JSON.stringify(data, null, 2))}</pre>`;
+  }
+
+  html += `\n\n<b>От:</b> ${who(ctx.from)}\n<b>Время:</b> ${esc(stamp)}`;
 
   const ok = await notifyAdmins(ctx, html);
 
   console.log('[notifyAdmins] delivered =', ok);
 
   return ctx.reply(ok > 0
-    ? '✅ Данные переданы администратору!'
+    ? '✅ Заявка успешно передана администратору!'
     : '❌ Не удалось доставить администратору.');
 });
-
-
 
 // === Express + webhook ===
 app.use(express.json());
@@ -183,7 +147,6 @@ app.get('/debug', async (req, res) => {
   }
 });
 
-// === запуск сервера ===
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, async () => {
   console.log(`🚀 Server running on port ${PORT}`);
