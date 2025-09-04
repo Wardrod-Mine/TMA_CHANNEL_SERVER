@@ -100,24 +100,19 @@ bot.on(message('web_app_data'), async (ctx) => {
       `📄 <b>Заявка (форма)</b>\n` +
       `<b>Имя:</b> ${fmt(data.name)}\n` +
       `<b>Телефон:</b> ${fmt(data.phone)}\n` +
-      (data.city ? `<b>Город:</b> ${fmt(data.city)}\n` : '') +
-      (data.comment ? `<b>Комментарий:</b> ${fmt(data.comment)}\n` : '');
-  } else if (data.type === 'lead' || data.action === 'consult') {
+      (data.comment ? `<b>Комментарий:</b> ${fmt(data.comment)}\n` : '') +
+      (data.selected || data.product?.title ? `<b>Выбранный продукт:</b> ${fmt(data.selected || data.product.title)}\n` : '');
+  }
+  else if (data.type === 'lead' || data.action === 'consult') {
     html =
       `💬 <b>Запрос консультации</b>\n` +
       `<b>Имя:</b> ${fmt(data.name)}\n` +
       `<b>Телефон:</b> ${fmt(data.phone)}\n` +
       (data.comment ? `<b>Комментарий:</b> ${fmt(data.comment)}\n` : '');
-  } else if (data.action === 'send_cart') {
-    html =
-      `🛒 <b>Заявка (корзина)</b>\n` +
-      `<b>Имя:</b> ${fmt(data.name)}\n` +
-      `<b>Телефон:</b> ${fmt(data.phone)}\n` +
-      `<b>Город:</b> ${fmt(data.city)}\n\n` +
-      `<b>Состав корзины:</b>\n${(data.cart || []).map((item, i) =>
-        `${i + 1}. ${esc(item.name)} (x${item.qty}) — ${esc(item.price)}`
-      ).join('\n')}`;
-  } else {
+  } 
+
+ 
+  else {
     html =
       `📥 <b>Данные из ТМА</b>\n` +
       `<pre>${esc(JSON.stringify(data, null, 2))}</pre>`;
