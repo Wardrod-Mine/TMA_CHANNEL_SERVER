@@ -71,6 +71,28 @@ bot.command('test_admin', async (ctx) => {
   return ctx.reply(ok > 0 ? `✅ Доставлено ${ok} админу(ам)` : '❌ Не удалось доставить');
 });
 
+bot.command('publish', async (ctx) => {
+  const botInfo = await ctx.telegram.getMe();
+  const botUsername = botInfo.username;
+
+  const postText = `🔥 <b>🚀 Теперь доступен каталог услуг прямо в Telegram!</b>\n\nНажмите кнопку ниже, чтобы открыть TMA.`;
+
+  const inlineKeyboard = [
+    [{ text: 'Открыть каталог', url: `https://t.me/${botUsername}?startapp=catalog` }]
+  ];
+
+  try {
+    await ctx.reply(postText, {
+      parse_mode: 'HTML',
+      disable_web_page_preview: true,
+      reply_markup: { inline_keyboard: inlineKeyboard }
+    });
+  } catch (e) {
+    console.error('Ошибка публикации:', e);
+    await ctx.reply('❌ Не удалось отправить пост: ' + (e.description || e.message));
+  }
+});
+
 // === приём данных из WebApp ===
 bot.on(message('web_app_data'), async (ctx) => {
   console.log('\n==== [web_app_data received] ====');
@@ -129,7 +151,48 @@ bot.on(message('web_app_data'), async (ctx) => {
     : '❌ Не удалось доставить администратору.');
 });
 
-// === Express + webhook ===
+app.post('/lead', async (req, res) => {
+  try {
+    const data = req.body;
+    console.log('\n==== [lead received] ====');
+    console.log('[payload]:', data);
+
+    const stamp = new Date().toLocaleString('ru-RU');
+    let html = '';
+
+    if (data.action === 'send_request_form') {
+      html =
+        `📄 <b>Заявка (форма)</b>\n` +
+        `<b>Имя:</b> ${fmt(data.name)}\n` +
+        `<b>Телефон:</b> ${fmt(data.phone)}\n` +
+        (data.comment ? `<b>Комментарий:</b> ${fmt(data.comment)}\n` : '') +
+        (data.service ? `<b>Услуга:</b> ${fmt(data.service)}\n` : '');
+    } 
+    else if (data.action === 'consult') {
+      html =
+        `💬 <b>Запрос консультации</b>\n` +
+        `<b>Имя:</b> ${fmt(data.name)}\n` +
+        `<b>Контакт:</b> ${fmt(data.contact)}\n` +
+        (data.message ? `<b>Комментарий:</b> ${fmt(data.message)}\n` : '');
+    }
+    else {
+      html =
+        `📥 <b>Данные из ТМА</b>\n` +
+        `<pre>${esc(JSON.stringify(data, null, 2))}</pre>`;
+    }
+
+    html += `\n\n<b>Время:</b> ${esc(stamp)}`;
+
+    const ok = await notifyAdmins({ telegram: bot.telegram, chat: { id: ADMIN_CHAT_IDS[0] } }, html);
+
+    console.log('[notifyAdmins] delivered =', ok);
+    res.json({ ok: true, delivered: ok });
+  } catch (err) {
+    console.error('❌ /lead error:', err);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 // === Express + webhook ===
 app.use(express.json());
 app.use(bot.webhookCallback('/bot'));
