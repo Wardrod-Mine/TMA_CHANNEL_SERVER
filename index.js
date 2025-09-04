@@ -76,9 +76,10 @@ bot.on(message('web_app_data'), async (ctx) => {
   console.log('\n==== [web_app_data received] ====');
   console.log('[from.id]:', ctx.from?.id, 'username:', ctx.from?.username);
   console.log('[raw payload]:', ctx.message.web_app_data?.data);
-
+  console.log('[ctx.message]:', JSON.stringify(ctx.message, null, 2));
   let data = null;
   try {
+
     data = JSON.parse(ctx.message.web_app_data.data);
     console.log('[parsed payload]:', data);
   } catch (err) {
