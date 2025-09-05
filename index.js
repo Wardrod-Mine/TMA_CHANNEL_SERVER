@@ -1,20 +1,13 @@
-// index.js
 require('dotenv').config();
 const { Telegraf } = require('telegraf');
 const { message } = require('telegraf/filters');
 const express = require('express');
+const cors = require('cors'); // ← реально используем
 const app = express();
-const cors = require('cors');
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const APP_URL = process.env.APP_URL;
 const FRONTEND_URL = process.env.FRONTEND_URL;
-
-if (!BOT_TOKEN) throw new Error('Нет BOT_TOKEN в .env');
-if (!APP_URL) console.warn('⚠️ APP_URL не задан — вебхук не установится');
-if (!ADMIN_CHAT_IDS.length) {
-  console.warn('⚠️ ADMIN_CHAT_IDS пуст — /lead не сможет доставить заявку. Укажите хотя бы один chat_id.');
-}
 
 const ADMIN_CHAT_IDS = (process.env.ADMIN_CHAT_IDS || '')
   .split(/[,\s]+/)
@@ -24,6 +17,10 @@ const ADMIN_CHAT_IDS = (process.env.ADMIN_CHAT_IDS || '')
   .filter(Number.isFinite);
 
 const ADMIN_THREAD_ID = process.env.ADMIN_THREAD_ID ? Number(process.env.ADMIN_THREAD_ID) : null;
+
+if (!BOT_TOKEN) throw new Error('Нет BOT_TOKEN в .env');
+if (!APP_URL) console.warn('⚠️ APP_URL не задан — вебхук не установится');
+if (!ADMIN_CHAT_IDS.length) console.warn('⚠️ ADMIN_CHAT_IDS пуст — /lead не сможет доставить заявку.');
 
 const bot = new Telegraf(BOT_TOKEN);
 
