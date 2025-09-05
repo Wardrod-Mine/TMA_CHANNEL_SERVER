@@ -4,6 +4,7 @@ const { Telegraf } = require('telegraf');
 const { message } = require('telegraf/filters');
 const express = require('express');
 const app = express();
+const cors = require('cors');
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const APP_URL = process.env.APP_URL;
@@ -11,6 +12,9 @@ const FRONTEND_URL = process.env.FRONTEND_URL;
 
 if (!BOT_TOKEN) throw new Error('Нет BOT_TOKEN в .env');
 if (!APP_URL) console.warn('⚠️ APP_URL не задан — вебхук не установится');
+if (!ADMIN_CHAT_IDS.length) {
+  console.warn('⚠️ ADMIN_CHAT_IDS пуст — /lead не сможет доставить заявку. Укажите хотя бы один chat_id.');
+}
 
 const ADMIN_CHAT_IDS = (process.env.ADMIN_CHAT_IDS || '')
   .split(/[,\s]+/)
@@ -154,12 +158,21 @@ bot.on(message('web_app_data'), async (ctx) => {
 // === Express + webhook ===
 app.use(express.json());
 app.use(bot.webhookCallback('/bot'));
+app.use(cors({
+  origin: FRONTEND_URL ? [FRONTEND_URL] : true,
+  methods: ['GET','POST'],
+  allowedHeaders: ['Content-Type'],
+}));
 
 app.post('/lead', async (req, res) => {
   try {
     const data = req.body;
     console.log('\n==== [lead received] ====');
     console.log('[payload]:', data);
+
+    if (!ADMIN_CHAT_IDS.length) {
+      return res.status(400).json({ ok: false, error: 'ADMIN_CHAT_IDS is empty' });
+    }
 
     const stamp = new Date().toLocaleString('ru-RU');
     let html = '';
@@ -188,7 +201,6 @@ app.post('/lead', async (req, res) => {
     html += `\n\n<b>Время:</b> ${esc(stamp)}`;
 
     const ok = await notifyAdmins({ telegram: bot.telegram, chat: { id: ADMIN_CHAT_IDS[0] } }, html);
-
     console.log('[notifyAdmins] delivered =', ok);
     res.json({ ok: true, delivered: ok });
   } catch (err) {
