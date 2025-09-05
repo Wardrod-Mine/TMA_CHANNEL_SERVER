@@ -5,9 +5,12 @@ const express = require('express');
 const cors = require('cors'); // ← реально используем
 const app = express();
 
+const CHANNEL_ID = process.env.CHANNEL_ID || null;
+const CHANNEL_THREAD_ID = process.env.CHANNEL_THREAD_ID ? Number(process.env.CHANNEL_THREAD_ID) : null;
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const APP_URL = process.env.APP_URL;
 const FRONTEND_URL = process.env.FRONTEND_URL;
+
 
 const ADMIN_CHAT_IDS = (process.env.ADMIN_CHAT_IDS || '')
   .split(/[,\s]+/)
@@ -34,6 +37,10 @@ const who = (u) => {
   return `${esc(name)}${un}`;
 };
 
+function isAdmin(id) {
+  return ADMIN_CHAT_IDS.includes(Number(id));
+}
+
 // === рассылка админам ===
 async function notifyAdmins(ctx, html) {
   const targets = ADMIN_CHAT_IDS.length ? ADMIN_CHAT_IDS : [ctx.chat.id];
@@ -55,15 +62,37 @@ async function notifyAdmins(ctx, html) {
 }
 
 // === /start ===
-bot.start((ctx) => {
-  return ctx.reply('📂 Добро пожаловать! Нажмите кнопку ниже, чтобы открыть каталог услуг:', {
+bot.start(async (ctx) => {
+  // общий привет + кнопка на TMA
+  await ctx.reply('📂 Добро пожаловать! Нажмите кнопку ниже, чтобы открыть каталог услуг:', {
     reply_markup: {
-      inline_keyboard: [
-        [{ text: 'Каталог', web_app: { url: FRONTEND_URL } }]
-      ]
+      inline_keyboard: [[{ text: 'Каталог', web_app: { url: FRONTEND_URL } }]]
     }
   });
+
+  // если это ЛС с админом — пришлём инструкцию по публикации
+  if (ctx.chat?.type === 'private' && isAdmin(ctx.from?.id)) {
+    const info = [
+      '🛠 <b>Инструкция по публикации поста</b>',
+      '',
+      '1) Подготовьте текст поста <i>(можно прямо в Телеграм)</i>.',
+      '2) Если нужен пост с фото — отправьте фото и напишите подпись (это будет текст поста).',
+      '3) Ответьте командой на текст/фото:',
+      '<code>/post Текст кнопки | https://example.com</code>',
+      '',
+      '👉 Куда уйдёт пост:',
+      CHANNEL_ID
+        ? `• По умолчанию в канал/чат: <code>${CHANNEL_ID}</code>${CHANNEL_THREAD_ID ? ` (топик ${CHANNEL_THREAD_ID})` : ''}`
+        : '• В тот чат, где вы вызвали команду',
+      '',
+      'Примеры:',
+      '• <code>/post Открыть каталог | https://t.me/PromouteBot?startapp=catalog</code> (ответом на сообщение с текстом)',
+      '• <code>/post Записаться | https://site.ru</code> (ответом на фото с подписью)',
+    ].join('\n');
+    await ctx.reply(info, { parse_mode: 'HTML', disable_web_page_preview: true });
+  }
 });
+
 
 // === test_admin ===
 bot.command('test_admin', async (ctx) => {
@@ -72,27 +101,57 @@ bot.command('test_admin', async (ctx) => {
   return ctx.reply(ok > 0 ? `✅ Доставлено ${ok} админу(ам)` : '❌ Не удалось доставить');
 });
 
-bot.command('publish', async (ctx) => {
-  const botInfo = await ctx.telegram.getMe();
-  const botUsername = botInfo.username;
-
-  const postText = `🔥 <b>🚀 Теперь доступен каталог услуг прямо в Telegram!</b>\n\nНажмите кнопку ниже, чтобы открыть TMA.`;
-
-  const inlineKeyboard = [
-    [{ text: 'Открыть каталог', url: `https://t.me/${botUsername}?startapp=catalog` }]
-  ];
-
+bot.command('post', async (ctx) => {
   try {
-    await ctx.reply(postText, {
-      parse_mode: 'HTML',
-      disable_web_page_preview: true,
-      reply_markup: { inline_keyboard: inlineKeyboard }
-    });
+    if (!isAdmin(ctx.from?.id)) {
+      return ctx.reply('🚫 Недостаточно прав для публикации');
+    }
+
+    const raw = ctx.message.text.replace(/^\/post(@\w+)?\s*/i, '');
+    const [firstLine, ...restLines] = raw.split('\n');
+    const { text: btnText, url: btnUrl } = parseBtn(firstLine);
+
+    // текст поста: из хвоста сообщения или из реплая (text/caption)
+    let postText = restLines.join('\n').trim();
+    const reply = ctx.message.reply_to_message;
+
+    // если не ввели пост текстом в этой команде — забираем из реплая
+    if (!postText && reply) {
+      postText = (reply.caption || reply.text || '').trim();
+    }
+
+    // есть ли фото в реплае
+    let photoFileId = null;
+    if (reply?.photo?.length) {
+      const p = pickLargestPhoto(reply.photo);
+      photoFileId = p?.file_id || null;
+    }
+
+    if (!btnText || !btnUrl || !postText) {
+      return ctx.reply(
+        'Формат:\n' +
+        '/post Текст кнопки | https://example.com\\nТекст поста\n' +
+        'ИЛИ ответьте командой /post на сообщение с готовым текстом/фото+подписью.',
+        { disable_web_page_preview: true }
+      );
+    }
+
+    // куда публиковать
+    const targetChatId = CHANNEL_ID || ctx.chat.id;
+    const threadId = CHANNEL_THREAD_ID || undefined;
+
+    await sendPost(
+      { chatId: targetChatId, threadId, text: postText, buttonText: btnText, buttonUrl: btnUrl, photoFileId },
+      ctx.telegram
+    );
+
+    return ctx.reply(`✅ Пост отправлен в ${targetChatId}${threadId ? ` (топик ${threadId})` : ''}`);
   } catch (e) {
-    console.error('Ошибка публикации:', e);
-    await ctx.reply('❌ Не удалось отправить пост: ' + (e.description || e.message));
+    console.error('post error:', e);
+    return ctx.reply('❌ Ошибка отправки: ' + (e.description || e.message));
   }
 });
+  
 
 // === приём данных из WebApp ===
 bot.on(message('web_app_data'), async (ctx) => {
@@ -161,6 +220,18 @@ app.use(cors({
   allowedHeaders: ['Content-Type'],
 }));
 
+function parseBtn(line) {
+  const [t, u] = (line || '').split('|');
+  const text = (t || '').trim();
+  const url = (u || '').trim();
+  return { text, url };
+}
+
+function pickLargestPhoto(sizes) {
+  if (!Array.isArray(sizes) || !sizes.length) return null;
+  return sizes.reduce((a, b) => (a.file_size || 0) > (b.file_size || 0) ? a : b);
+}
+
 app.post('/lead', async (req, res) => {
   try {
     const data = req.body;
@@ -206,7 +277,30 @@ app.post('/lead', async (req, res) => {
   }
 });
 
+async function sendPost({ chatId, threadId, text, buttonText, buttonUrl, photoFileId }, tg) {
+  if (!buttonText || !buttonUrl) {
+    throw new Error('Не заполнены текст кнопки или URL');
+  }
+  if (!/^https?:\/\//i.test(buttonUrl)) {
+    throw new Error('URL кнопки должен начинаться с http(s)://');
+  }
 
+  const kb = { inline_keyboard: [[{ text: buttonText, url: buttonUrl }]] };
+
+  const extra = {
+    parse_mode: 'HTML',
+    disable_web_page_preview: false,
+    reply_markup: kb,
+  };
+  if (threadId) extra.message_thread_id = threadId;
+
+  if (photoFileId) {
+    // отправляем фото с подписью
+    return tg.sendPhoto(chatId, photoFileId, { caption: text, ...extra });
+  }
+  // обычный текст
+  return tg.sendMessage(chatId, text, extra);
+}
 
 app.get('/', (req, res) => res.send('Bot is running'));
 app.get('/debug', async (req, res) => {
