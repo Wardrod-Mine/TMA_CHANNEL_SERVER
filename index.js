@@ -10,7 +10,8 @@ const CHANNEL_THREAD_ID = process.env.CHANNEL_THREAD_ID ? Number(process.env.CHA
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const APP_URL = process.env.APP_URL;
 const FRONTEND_URL = process.env.FRONTEND_URL;
-
+const POST_BUTTON_TEXT = process.env.POST_BUTTON_TEXT;
+const POST_BUTTON_URL  = process.env.POST_BUTTON_URL  || FRONTEND_URL;
 
 const ADMIN_CHAT_IDS = (process.env.ADMIN_CHAT_IDS || '')
   .split(/[,\s]+/)
@@ -62,36 +63,22 @@ async function notifyAdmins(ctx, html) {
 }
 
 // === /start ===
-bot.start(async (ctx) => {
-  // общий привет + кнопка на TMA
-  await ctx.reply('📂 Добро пожаловать! Нажмите кнопку ниже, чтобы открыть каталог услуг:', {
-    reply_markup: {
-      inline_keyboard: [[{ text: 'Каталог', web_app: { url: FRONTEND_URL } }]]
-    }
-  });
+// внутри bot.start(...)
+if (ctx.chat?.type === 'private' && isAdmin(ctx.from?.id)) {
+  await ctx.reply(
+    [
+      '🛠 <b>Публикация поста</b>',
+      '• Напишите текст поста и отправьте:',
+      '<code>/post Текст поста</code>',
+      '• Или ответьте командой <code>/post</code> на сообщение с текстом/фото+подписью.',
+      '',
+      `Кнопка добавляется автоматически: «${POST_BUTTON_TEXT}» → ${POST_BUTTON_URL}`,
+      CHANNEL_ID ? `По умолчанию посты уходят в: <code>${CHANNEL_ID}</code>` : 'Без CHANNEL_ID пост уйдёт в текущий чат.'
+    ].join('\n'),
+    { parse_mode: 'HTML', disable_web_page_preview: true }
+  );
+}
 
-  // если это ЛС с админом — пришлём инструкцию по публикации
-  if (ctx.chat?.type === 'private' && isAdmin(ctx.from?.id)) {
-    const info = [
-      '🛠 <b>Инструкция по публикации поста</b>',
-      '',
-      '1) Подготовьте текст поста <i>(можно прямо в Телеграм)</i>.',
-      '2) Если нужен пост с фото — отправьте фото и напишите подпись (это будет текст поста).',
-      '3) Ответьте командой на текст/фото:',
-      '<code>/post Текст кнопки | https://example.com</code>',
-      '',
-      '👉 Куда уйдёт пост:',
-      CHANNEL_ID
-        ? `• По умолчанию в канал/чат: <code>${CHANNEL_ID}</code>${CHANNEL_THREAD_ID ? ` (топик ${CHANNEL_THREAD_ID})` : ''}`
-        : '• В тот чат, где вы вызвали команду',
-      '',
-      'Примеры:',
-      '• <code>/post Открыть каталог | https://t.me/PromouteBot?startapp=catalog</code> (ответом на сообщение с текстом)',
-      '• <code>/post Записаться | https://site.ru</code> (ответом на фото с подписью)',
-    ].join('\n');
-    await ctx.reply(info, { parse_mode: 'HTML', disable_web_page_preview: true });
-  }
-});
 
 
 // === test_admin ===
@@ -155,54 +142,45 @@ bot.command('set_channel', (ctx) => {
 
 bot.command('post', async (ctx) => {
   try {
-    if (!isAdmin(ctx.from?.id)) {
+    if (!isAdmin?.(ctx.from?.id)) {
       return ctx.reply('🚫 Недостаточно прав для публикации');
     }
 
-    const raw = ctx.message.text.replace(/^\/post(@\w+)?\s*/i, '');
-    const [firstLine, ...restLines] = raw.split('\n');
-    const { text: btnText, url: btnUrl } = parseBtn(firstLine);
+    // 1) текст прямо в команде
+    let postText = ctx.message.text.replace(/^\/post(@\w+)?\s*/i, '').trim();
 
-    // текст поста: из хвоста сообщения или из реплая (text/caption)
-    let postText = restLines.join('\n').trim();
+    // 2) или берём из реплая (text/caption)
     const reply = ctx.message.reply_to_message;
+    if (!postText && reply) postText = (reply.caption || reply.text || '').trim();
 
-    // если не ввели пост текстом в этой команде — забираем из реплая
-    if (!postText && reply) {
-      postText = (reply.caption || reply.text || '').trim();
-    }
-
-    // есть ли фото в реплае
+    // 3) фото из реплая (если есть)
     let photoFileId = null;
     if (reply?.photo?.length) {
-      const p = pickLargestPhoto(reply.photo);
-      photoFileId = p?.file_id || null;
+      const largest = reply.photo.reduce((a, b) => (a.file_size || 0) > (b.file_size || 0) ? a : b);
+      photoFileId = largest?.file_id || null;
     }
 
-    if (!btnText || !btnUrl || !postText) {
+    if (!postText) {
       return ctx.reply(
-        'Формат:\n' +
-        '/post Текст кнопки | https://example.com\\nТекст поста\n' +
-        'ИЛИ ответьте командой /post на сообщение с готовым текстом/фото+подписью.',
+        'Пришлите текст поста после команды:\n' +
+        '/post Текст поста\n' +
+        'ИЛИ ответьте /post на сообщение с текстом/фото+подписью.\n' +
+        `Кнопка будет добавлена автоматически: «${POST_BUTTON_TEXT}» → ${POST_BUTTON_URL}`,
         { disable_web_page_preview: true }
       );
     }
 
-    // куда публиковать
-    const targetChatId = (typeof RUNTIME_CHANNEL_ID !== 'undefined' && RUNTIME_CHANNEL_ID) || CHANNEL_ID || ctx.chat.id;
-    const threadId = CHANNEL_THREAD_ID || undefined;
+    const targetChatId = CHANNEL_ID || ctx.chat.id;    
+    const threadId     = CHANNEL_THREAD_ID || undefined; 
 
-    await sendPost(
-      { chatId: targetChatId, threadId, text: postText, buttonText: btnText, buttonUrl: btnUrl, photoFileId },
-      ctx.telegram
-    );
-
+    await sendPost({ chatId: targetChatId, threadId, text: postText, photoFileId }, ctx.telegram);
     return ctx.reply(`✅ Пост отправлен в ${targetChatId}${threadId ? ` (топик ${threadId})` : ''}`);
   } catch (e) {
     console.error('post error:', e);
     return ctx.reply('❌ Ошибка отправки: ' + (e.description || e.message));
   }
 });
+
   
 
 // === приём данных из WebApp ===
@@ -329,41 +307,31 @@ app.post('/lead', async (req, res) => {
   }
 });
 
-async function sendPost({ chatId, threadId, text, buttonText, buttonUrl, photoFileId }, tg) {
-  if (!buttonText || !buttonUrl) throw new Error('Не заполнены текст кнопки или URL');
-  if (!/^https?:\/\//i.test(buttonUrl)) throw new Error('URL кнопки должен начинаться с http(s)://');
-
+async function sendPost({ chatId, threadId, text, photoFileId }, tg) {
   const baseExtra = {
     parse_mode: 'HTML',
     disable_web_page_preview: false,
-    reply_markup: { inline_keyboard: [[{ text: buttonText, url: buttonUrl }]] }
+    reply_markup: { inline_keyboard: [[{ text: POST_BUTTON_TEXT, url: POST_BUTTON_URL }]] }
   };
 
   const tryOnce = async (withThread) => {
-    const extra = withThread && threadId ? { ...baseExtra, message_thread_id: threadId } : baseExtra;
-    if (photoFileId) {
-      return tg.sendPhoto(chatId, photoFileId, { caption: text, ...extra });
-    }
+    const extra = (withThread && threadId) ? { ...baseExtra, message_thread_id: threadId } : baseExtra;
+    if (photoFileId) return tg.sendPhoto(chatId, photoFileId, { caption: text, ...extra });
     return tg.sendMessage(chatId, text, extra);
   };
 
   try {
-    return await tryOnce(true);      // пробуем с threadId (если задан)
+    return await tryOnce(true);   // пробуем с threadId (если задан)
   } catch (e) {
-    const msg = String(e.description || e.message || '').toLowerCase();
-    const threadProblem =
-      msg.includes('message_thread_id') ||
-      msg.includes('topic') ||
-      msg.includes('forum') ||
-      msg.includes('thread');
-
+    const m = String(e.description || e.message || '').toLowerCase();
+    const threadProblem = m.includes('message_thread_id') || m.includes('topic') || m.includes('forum') || m.includes('thread');
     if (threadId && threadProblem) {
-      // повтор без threadId — нужно для каналов
-      return await tryOnce(false);
+      return await tryOnce(false); // канал без топиков — повтор без threadId
     }
     throw e;
   }
 }
+
 
 app.get('/', (req, res) => res.send('Bot is running'));
 app.get('/debug', async (req, res) => {
