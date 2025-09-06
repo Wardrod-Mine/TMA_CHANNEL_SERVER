@@ -10,8 +10,9 @@ const CHANNEL_THREAD_ID = process.env.CHANNEL_THREAD_ID ? Number(process.env.CHA
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const APP_URL = process.env.APP_URL;
 const FRONTEND_URL = process.env.FRONTEND_URL;
-const POST_BUTTON_TEXT = process.env.POST_BUTTON_TEXT;
-const POST_BUTTON_URL  = process.env.POST_BUTTON_URL  || FRONTEND_URL;
+const POST_BUTTON_TEXT = process.env.POST_BUTTON_TEXT || 'Открыть';
+const POST_BUTTON_URL  = process.env.POST_BUTTON_URL  || FRONTEND_URL || 'https://example.com';
+
 
 const ADMIN_CHAT_IDS = (process.env.ADMIN_CHAT_IDS || '')
   .split(/[,\s]+/)
@@ -63,20 +64,31 @@ async function notifyAdmins(ctx, html) {
 }
 
 // === /start ===
-if (ctx.chat?.type === 'private' && isAdmin(ctx.from?.id)) {
-  await ctx.reply(
-    [
-      '🛠 <b>Публикация поста</b>',
-      '• Напишите текст поста и отправьте:',
-      '<code>/post Текст поста</code>',
-      '• Или ответьте командой <code>/post</code> на сообщение с текстом/фото+подписью.',
-      '',
-      `Кнопка добавляется автоматически: «${POST_BUTTON_TEXT}» → ${POST_BUTTON_URL}`,
-      CHANNEL_ID ? `По умолчанию посты уходят в: <code>${CHANNEL_ID}</code>` : 'Без CHANNEL_ID пост уйдёт в текущий чат.'
-    ].join('\n'),
-    { parse_mode: 'HTML', disable_web_page_preview: true }
-  );
-}
+bot.start(async (ctx) => {
+  await ctx.reply('📂 Добро пожаловать! Нажмите кнопку ниже, чтобы открыть каталог услуг:', {
+    reply_markup: {
+      inline_keyboard: [[{ text: 'Каталог', web_app: { url: FRONTEND_URL } }]]
+    }
+  });
+
+  if (ctx.chat?.type === 'private' && isAdmin(ctx.from?.id)) {
+    await ctx.reply(
+      [
+        '🛠 <b>Публикация поста</b>',
+        '• Напишите текст поста и отправьте:',
+        '<code>/post Текст поста</code>',
+        '• Или ответьте командой <code>/post</code> на сообщение с текстом/фото+подписью.',
+        '',
+        `Кнопка добавляется автоматически: «${POST_BUTTON_TEXT}» → ${POST_BUTTON_URL}`,
+        CHANNEL_ID
+          ? `По умолчанию посты уходят в: <code>${CHANNEL_ID}</code>`
+          : 'Без CHANNEL_ID пост уйдёт в текущий чат.'
+      ].join('\n'),
+      { parse_mode: 'HTML', disable_web_page_preview: true }
+    );
+  }
+});
+
 
 
 
