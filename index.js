@@ -189,7 +189,7 @@ bot.command('post', async (ctx) => {
     }
 
     // куда публиковать
-    const targetChatId = CHANNEL_ID || ctx.chat.id;
+    const targetChatId = (typeof RUNTIME_CHANNEL_ID !== 'undefined' && RUNTIME_CHANNEL_ID) || CHANNEL_ID || ctx.chat.id;
     const threadId = CHANNEL_THREAD_ID || undefined;
 
     await sendPost(
@@ -330,28 +330,39 @@ app.post('/lead', async (req, res) => {
 });
 
 async function sendPost({ chatId, threadId, text, buttonText, buttonUrl, photoFileId }, tg) {
-  if (!buttonText || !buttonUrl) {
-    throw new Error('Не заполнены текст кнопки или URL');
-  }
-  if (!/^https?:\/\//i.test(buttonUrl)) {
-    throw new Error('URL кнопки должен начинаться с http(s)://');
-  }
+  if (!buttonText || !buttonUrl) throw new Error('Не заполнены текст кнопки или URL');
+  if (!/^https?:\/\//i.test(buttonUrl)) throw new Error('URL кнопки должен начинаться с http(s)://');
 
-  const kb = { inline_keyboard: [[{ text: buttonText, url: buttonUrl }]] };
-
-  const extra = {
+  const baseExtra = {
     parse_mode: 'HTML',
     disable_web_page_preview: false,
-    reply_markup: kb,
+    reply_markup: { inline_keyboard: [[{ text: buttonText, url: buttonUrl }]] }
   };
-  if (threadId) extra.message_thread_id = threadId;
 
-  if (photoFileId) {
-    // отправляем фото с подписью
-    return tg.sendPhoto(chatId, photoFileId, { caption: text, ...extra });
+  const tryOnce = async (withThread) => {
+    const extra = withThread && threadId ? { ...baseExtra, message_thread_id: threadId } : baseExtra;
+    if (photoFileId) {
+      return tg.sendPhoto(chatId, photoFileId, { caption: text, ...extra });
+    }
+    return tg.sendMessage(chatId, text, extra);
+  };
+
+  try {
+    return await tryOnce(true);      // пробуем с threadId (если задан)
+  } catch (e) {
+    const msg = String(e.description || e.message || '').toLowerCase();
+    const threadProblem =
+      msg.includes('message_thread_id') ||
+      msg.includes('topic') ||
+      msg.includes('forum') ||
+      msg.includes('thread');
+
+    if (threadId && threadProblem) {
+      // повтор без threadId — нужно для каналов
+      return await tryOnce(false);
+    }
+    throw e;
   }
-  // обычный текст
-  return tg.sendMessage(chatId, text, extra);
 }
 
 app.get('/', (req, res) => res.send('Bot is running'));
