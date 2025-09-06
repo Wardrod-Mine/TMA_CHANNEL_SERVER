@@ -101,6 +101,58 @@ bot.command('test_admin', async (ctx) => {
   return ctx.reply(ok > 0 ? `✅ Доставлено ${ok} админу(ам)` : '❌ Не удалось доставить');
 });
 
+let RUNTIME_CHANNEL_ID = CHANNEL_ID;
+
+bot.command('where', (ctx) => {
+  if (!isAdmin(ctx.from.id)) return ctx.reply('🚫');
+  ctx.reply(
+    [
+      `ENV CHANNEL_ID: ${CHANNEL_ID || '—'}`,
+      `RUNTIME_CHANNEL_ID: ${RUNTIME_CHANNEL_ID || '—'}`,
+      `THREAD_ID: ${CHANNEL_THREAD_ID || '—'}`
+    ].join('\n')
+  );
+});
+
+// Быстрый тест отправки в канал
+bot.command('post_test', async (ctx) => {
+  if (!isAdmin(ctx.from.id)) return ctx.reply('🚫');
+  const target = RUNTIME_CHANNEL_ID || ctx.chat.id;
+  try {
+    await sendPost(
+      {
+        chatId: target,
+        threadId: CHANNEL_THREAD_ID || undefined,
+        text: 'Тестовый пост ✅\nЕсли вы это видите в канале — всё ок.',
+        buttonText: 'Открыть',
+        buttonUrl: 'https://example.com'
+      },
+      ctx.telegram
+    );
+    ctx.reply(`✅ Ушло в ${target}${CHANNEL_THREAD_ID ? ` (топик ${CHANNEL_THREAD_ID})` : ''}`);
+  } catch (e) {
+    // покажем точную причину Телеграма
+    ctx.reply(`❌ Не отправилось: ${e.description || e.message}`);
+  }
+});
+
+bot.command('bind', (ctx) => {
+  if (!isAdmin(ctx.from.id)) return ctx.reply('🚫');
+  const fwd = ctx.message.reply_to_message?.forward_from_chat;
+  if (!fwd) return ctx.reply('Сделайте /bind ответом на ПЕРЕСЛАННОЕ из канала сообщение.');
+  RUNTIME_CHANNEL_ID = fwd.id; // например -100xxxxxxxxxx
+  ctx.reply(`✅ Привязал канал: ${RUNTIME_CHANNEL_ID}`);
+});
+
+// Ручная установка: /set_channel -100123.. или /set_channel @username
+bot.command('set_channel', (ctx) => {
+  if (!isAdmin(ctx.from.id)) return ctx.reply('🚫');
+  const arg = ctx.message.text.replace(/^\/set_channel(@\w+)?\s+/, '').trim();
+  if (!arg) return ctx.reply('Укажи id канала (-100…) или @username.');
+  RUNTIME_CHANNEL_ID = arg.startsWith('@') ? arg : Number(arg);
+  ctx.reply(`✔️ Теперь публикуем в: ${RUNTIME_CHANNEL_ID}`);
+});
+
 bot.command('post', async (ctx) => {
   try {
     if (!isAdmin(ctx.from?.id)) {
