@@ -63,7 +63,6 @@ async function notifyAdmins(ctx, html) {
 }
 
 // === /start ===
-// внутри bot.start(...)
 if (ctx.chat?.type === 'private' && isAdmin(ctx.from?.id)) {
   await ctx.reply(
     [
