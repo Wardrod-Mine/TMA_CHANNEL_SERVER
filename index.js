@@ -2,8 +2,16 @@ require('dotenv').config();
 const { Telegraf } = require('telegraf');
 const { message } = require('telegraf/filters');
 const express = require('express');
-const cors = require('cors'); // ← реально используем
+const cors = require('cors');
 const app = express();
+
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
+const { exec } = require('child_process');
+const sharp = require('sharp');
+
+app.use('/assets', express.static(path.join(__dirname, 'assets')));
 
 const CHANNEL_ID = process.env.CHANNEL_ID || null;
 const CHANNEL_THREAD_ID = process.env.CHANNEL_THREAD_ID ? Number(process.env.CHANNEL_THREAD_ID) : null;
@@ -11,8 +19,110 @@ const BOT_TOKEN = process.env.BOT_TOKEN;
 const APP_URL = process.env.APP_URL;
 const FRONTEND_URL = process.env.FRONTEND_URL;
 const POST_BUTTON_TEXT = process.env.POST_BUTTON_TEXT || 'Открыть';
-const POST_BUTTON_URL  = process.env.POST_BUTTON_URL  || FRONTEND_URL || 'https://example.com';
+let POST_BUTTON_URL  = process.env.POST_BUTTON_URL  || FRONTEND_URL || 'https://example.com';
+const TMA_START_PARAM = process.env.TMA_START_PARAM || 'tma';
+let BOT_USERNAME = process.env.BOT_USERNAME || null;
 
+const GITHUB_BRANCH = process.env.GITHUB_ASSETS_BRANCH || process.env.GITHUB_COMMIT_BRANCH || 'main';
+const GITHUB_ASSETS_BASE = process.env.GITHUB_ASSETS_BASE || 'assets'; 
+
+const allowList = [process.env.FRONTEND_URL, 'https://web.telegram.org', 'https://web.telegram.org/a'].filter(Boolean);
+
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  if (origin && origin === FRONTEND_URL) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Vary', 'Origin');
+  }
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PATCH,PUT,DELETE,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Telegram-Init-Data');
+  if (req.method === 'OPTIONS') return res.sendStatus(204);
+  next();
+});
+
+app.use(cors({
+  origin: [
+    'https://trun.tmashop.ru',
+    'https://web.telegram.org',
+    'https://app.telegram.org'
+  ],
+  methods: ['GET','POST','PUT','PATCH','DELETE','OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'Telegram-Init-Data'],
+  credentials: true,
+  preflightContinue: false
+}));
+app.options('*', cors());
+
+function ghHeaders() {
+  return {
+    'Authorization': `Bearer ${GITHUB_TOKEN}`,
+    'Accept': 'application/vnd.github+json',
+    'User-Agent': 'tma-pictures-server'
+  };
+}
+
+async function githubUpsertFile(repoPath, contentBuffer, message) {
+  if (!GITHUB_REPO || !GITHUB_TOKEN) throw new Error('GitHub storage is not configured');
+  const [owner, repo] = GITHUB_REPO.split('/');
+  const apiBase = `https://api.github.com/repos/${owner}/${repo}/contents/${encodeURIComponent(repoPath)}`;
+
+  let sha = undefined;
+  try {
+    const headRes = await fetch(apiBase, { headers: ghHeaders() });
+    if (headRes.ok) {
+      const headJson = await headRes.json();
+      if (headJson && headJson.sha) sha = headJson.sha;
+    }
+  } catch {}
+
+  const payload = {
+    message: message || `Upload ${repoPath}`,
+    content: contentBuffer.toString('base64'),
+    branch: GITHUB_BRANCH,
+    sha
+  };
+
+  const putRes = await fetch(apiBase, {
+    method: 'PUT',
+    headers: { ...ghHeaders(), 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+
+  if (!putRes.ok) {
+    const e = await putRes.text();
+    throw new Error(`GitHub PUT failed: ${putRes.status} ${putRes.statusText} ${e}`);
+  }
+  const j = await putRes.json();
+  const rawUrl = `https://raw.githubusercontent.com/${GITHUB_REPO}/${GITHUB_BRANCH}/${repoPath}`;
+  return { ok: true, rawUrl, sha: j.content?.sha };
+}
+
+function log(tag, ...msg) {
+  const t = new Date().toISOString().split('T')[1].split('.')[0];
+  console.log(`[${t}] [${tag}]`, ...msg);
+}
+function warn(tag, ...msg) {
+  const t = new Date().toISOString().split('T')[1].split('.')[0];
+  console.warn(`[${t}] [WARN:${tag}]`, ...msg);
+}
+function err(tag, ...msg) {
+  const t = new Date().toISOString().split('T')[1].split('.')[0];
+  console.error(`[${t}] [ERROR:${tag}]`, ...msg);
+}
+
+function buildTmaLink(username, startParam) {
+  if (!username) return POST_BUTTON_URL;
+  const suffix = startParam ? `?startapp=${encodeURIComponent(startParam)}` : '';
+  return `https://t.me/${username}/app${suffix}`;
+}
+
+function ensurePostButtonUrl(username) {
+  if (!process.env.POST_BUTTON_URL && username) {
+    POST_BUTTON_URL = buildTmaLink(username, TMA_START_PARAM);
+  }
+  return POST_BUTTON_URL;
+}
+ensurePostButtonUrl(BOT_USERNAME);
 
 const ADMIN_CHAT_IDS = (process.env.ADMIN_CHAT_IDS || '')
   .split(/[,\s]+/)
@@ -29,7 +139,7 @@ if (!ADMIN_CHAT_IDS.length) console.warn('⚠️ ADMIN_CHAT_IDS пуст — /le
 
 const bot = new Telegraf(BOT_TOKEN);
 
-// === утилиты ===
+// ========================= утилиты ==========================
 const esc = (s) => String(s ?? '').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
 const fmt = (v) => v ? esc(v) : '—';
 const who = (u) => {
@@ -63,11 +173,17 @@ async function notifyAdmins(ctx, html) {
   return delivered;
 }
 
-// === /start ===
+// ======================== /start =========================
 bot.start(async (ctx) => {
+  const catalogUrl = buildTmaLink(BOT_USERNAME, TMA_START_PARAM) || FRONTEND_URL || POST_BUTTON_URL;
+
   await ctx.reply('📂 Добро пожаловать! Нажмите кнопку ниже, чтобы открыть каталог услуг:', {
     reply_markup: {
-      inline_keyboard: [[{ text: 'Каталог', web_app: { url: FRONTEND_URL } }]]
+      inline_keyboard: [[
+        FRONTEND_URL
+          ? { text: 'Каталог', web_app: { url: FRONTEND_URL } }
+          : { text: 'Каталог', url: catalogUrl }
+      ]]
     }
   });
 
@@ -75,24 +191,16 @@ bot.start(async (ctx) => {
     await ctx.reply(
       [
         '🛠 <b>Публикация поста</b>',
-        '• Напишите текст поста и отправьте:',
-        '<code>/post Текст поста</code>',
-        '• Или ответьте командой <code>/post</code> на сообщение с текстом/фото+подписью.',
+        '• Ответьте командой <code>/post</code> на сообщение с фото+текстом.',
         '',
-        `Кнопка добавляется автоматически: «${POST_BUTTON_TEXT}» → ${POST_BUTTON_URL}`,
-        CHANNEL_ID
-          ? `По умолчанию посты уходят в: <code>${CHANNEL_ID}</code>`
-          : 'Без CHANNEL_ID пост уйдёт в текущий чат.'
+        `Кнопка добавляется автоматически: «${POST_BUTTON_TEXT}» → ${ensurePostButtonUrl(BOT_USERNAME)}`,
       ].join('\n'),
       { parse_mode: 'HTML', disable_web_page_preview: true }
     );
   }
 });
 
-
-
-
-// === test_admin ===
+// ======================== test_admin ===================
 bot.command('test_admin', async (ctx) => {
   const html = `<b>🔔 Тестовое сообщение</b>\n\nОт: ${who(ctx.from)}`;
   const ok = await notifyAdmins(ctx, html);
@@ -129,7 +237,6 @@ bot.command('post_test', async (ctx) => {
     );
     ctx.reply(`✅ Ушло в ${target}${CHANNEL_THREAD_ID ? ` (топик ${CHANNEL_THREAD_ID})` : ''}`);
   } catch (e) {
-    // покажем точную причину Телеграма
     ctx.reply(`❌ Не отправилось: ${e.description || e.message}`);
   }
 });
@@ -138,7 +245,7 @@ bot.command('bind', (ctx) => {
   if (!isAdmin(ctx.from.id)) return ctx.reply('🚫');
   const fwd = ctx.message.reply_to_message?.forward_from_chat;
   if (!fwd) return ctx.reply('Сделайте /bind ответом на ПЕРЕСЛАННОЕ из канала сообщение.');
-  RUNTIME_CHANNEL_ID = fwd.id; // например -100xxxxxxxxxx
+  RUNTIME_CHANNEL_ID = fwd.id; 
   ctx.reply(`✅ Привязал канал: ${RUNTIME_CHANNEL_ID}`);
 });
 
@@ -157,14 +264,11 @@ bot.command('post', async (ctx) => {
       return ctx.reply('🚫 Недостаточно прав для публикации');
     }
 
-    // 1) текст прямо в команде
     let postText = ctx.message.text.replace(/^\/post(@\w+)?\s*/i, '').trim();
 
-    // 2) или берём из реплая (text/caption)
     const reply = ctx.message.reply_to_message;
     if (!postText && reply) postText = (reply.caption || reply.text || '').trim();
 
-    // 3) фото из реплая (если есть)
     let photoFileId = null;
     if (reply?.photo?.length) {
       const largest = reply.photo.reduce((a, b) => (a.file_size || 0) > (b.file_size || 0) ? a : b);
@@ -174,8 +278,9 @@ bot.command('post', async (ctx) => {
     if (!postText) {
       return ctx.reply(
         'Пришлите текст поста после команды:\n' +
-        '/post Текст поста\n' +
-        'ИЛИ ответьте /post на сообщение с текстом/фото+подписью.\n' +
+        '(/post: "Текст поста")\n' +
+        'ИЛИ\n' +
+        'ответьте /post на сообщение с текстом/фото+подписью.\n' +
         `Кнопка будет добавлена автоматически: «${POST_BUTTON_TEXT}» → ${POST_BUTTON_URL}`,
         { disable_web_page_preview: true }
       );
@@ -190,11 +295,9 @@ bot.command('post', async (ctx) => {
     console.error('post error:', e);
     return ctx.reply('❌ Ошибка отправки: ' + (e.description || e.message));
   }
-});
+}); 
 
-  
-
-// === приём данных из WebApp ===
+// ================ приём данных из WebApp ==================
 bot.on(message('web_app_data'), async (ctx) => {
   console.log('\n==== [web_app_data received] ====');
   console.log('[from.id]:', ctx.from?.id, 'username:', ctx.from?.username);
@@ -216,24 +319,26 @@ bot.on(message('web_app_data'), async (ctx) => {
 
   const stamp = new Date().toLocaleString('ru-RU');
   let html = '';
+  const unameRaw = data?.username || ctx.from?.username || null;
+  const unameAt = unameRaw ? `@${String(unameRaw).replace(/^@/, '')}` : null;
 
-  // === разные типы заявок ===
   if (data.action === 'send_request' || data.action === 'send_request_form') {
     html =
       `📄 <b>Заявка (форма)</b>\n` +
       `<b>Имя:</b> ${fmt(data.name)}\n` +
+      `<b>Юзернейм:</b> ${fmt(unameAt)}\n` +
       `<b>Телефон:</b> ${fmt(data.phone)}\n` +
       (data.comment ? `<b>Комментарий:</b> ${fmt(data.comment)}\n` : '') +
       (data.selected || data.product?.title ? `<b>Выбранный продукт:</b> ${fmt(data.selected || data.product.title)}\n` : '');
   }
-  else if (data.type === 'lead' || data.action === 'consult') {
+  else if (data.action === 'consult') {
     html =
-      `💬 <b>Запрос консультации</b>\n` +
+      `👨‍💻 <b>Связаться с разработчиком</b>\n` +
       `<b>Имя:</b> ${fmt(data.name)}\n` +
-      `<b>Телефон:</b> ${fmt(data.phone)}\n` +
-      (data.comment ? `<b>Комментарий:</b> ${fmt(data.comment)}\n` : '');
-  } 
-
+      `<b>Юзернейм:</b> ${fmt(unameAt)}\n` +
+      `<b>Контакт:</b> ${fmt(data.contact)}\n` +
+      (data.message ? `<b>Комментарий:</b> ${fmt(data.message)}\n` : '');
+  }
  
   else {
     html =
@@ -254,12 +359,133 @@ bot.on(message('web_app_data'), async (ctx) => {
 
 // === Express + webhook ===
 app.use(express.json());
-app.use(bot.webhookCallback('/bot'));
-app.use(cors({
-  origin: FRONTEND_URL ? [FRONTEND_URL] : true,
-  methods: ['GET','POST'],
-  allowedHeaders: ['Content-Type'],
-}));
+const ALLOWED_ORIGINS = [
+  process.env.FRONTEND_URL,             
+  'https://web.telegram.org',     
+  'https://web.telegram.org/a'               
+].filter(Boolean);
+
+const multer = require('multer');
+
+
+
+function ensureDir(p){ try{ fs.mkdirSync(p, { recursive: true }); }catch(e){} }
+const storage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    const cardId = (req.body.cardId || req.query.cardId || 'misc').replace(/[^a-zA-Z0-9_\-]/g, '_');
+    const dir = path.join(__dirname, 'assets', cardId);
+    ensureDir(dir);
+    cb(null, dir);
+  },
+  filename: function (req, file, cb) {
+    const name = Date.now() + '-' + file.originalname.replace(/\s+/g, '_');
+    cb(null, name);
+  }
+});
+const upload = multer({ storage, limits: { fileSize: 30 * 1024 * 1024 } }); // 30 MB limit
+
+
+
+app.post(['/upload-image', '/api/upload-image'], (req, res) => {
+  upload.single('image')(req, res, async (err) => {
+    if (err) {
+      if (err.code === 'LIMIT_FILE_SIZE') {
+        warn('upload', 'file_too_large', err.message);
+        return res.status(413).json({ ok: false, error: 'file_too_large' });
+      }
+      err('upload', err && err.message ? err.message : err);
+      return res.status(400).json({ ok: false, error: err && err.message ? err.message : 'upload_error' });
+    }
+
+    try {
+      if (!req.file) {
+        warn('upload', 'no_file');
+        return res.status(400).json({ ok: false, error: 'no_file' });
+      }
+
+      const cardId = (req.body.cardId || req.query.cardId || 'misc')
+        .toString().trim().replace(/[^a-zA-Z0-9_\-]/g, '_') || 'misc';
+
+      let fileName = req.file.originalname.replace(/[^\w.\-]/g, '_');
+      const MAX_FILENAME_LEN = 128;
+      fileName = fileName.substring(0, MAX_FILENAME_LEN);
+
+      const localDir = path.join(__dirname, 'assets', cardId);
+      fs.mkdirSync(localDir, { recursive: true });
+      const localPath = path.join(localDir, fileName);
+
+      console.log('fileName:', fileName);
+      console.log('cardId:', cardId);
+      console.log('localDir:', localDir);
+      console.log('localPath (intended):', localPath);
+      console.log('req.file.buffer present:', Boolean(req.file.buffer));
+      console.log('req.file.path:', req.file.path);
+      console.log('req.file.originalname:', req.file.originalname);
+      console.log('req.file.size:', req.file.size);
+      console.log('req.file.mimetype:', req.file.mimetype);
+
+      // multer already stored file on disk (req.file.path) or in memory (req.file.buffer)
+      if (req.file.buffer) {
+        fs.writeFileSync(localPath, req.file.buffer);
+      } else if (req.file.path) {
+        fs.copyFileSync(req.file.path, localPath);
+        if (req.file.path !== localPath) {
+          try { fs.unlinkSync(req.file.path); } catch (_) {}
+        }
+      }
+
+      // Post-process: read saved file, log image metadata and optionally convert unsupported formats (HEIC/HEIF -> jpg)
+      let finalPath = localPath;
+      try {
+        const buf = fs.readFileSync(localPath);
+        try { fs.writeFileSync(localPath + '.raw', buf.slice(0, 512)); } catch(_){}
+
+        let meta = null;
+        try {
+          meta = await sharp(buf).metadata();
+        } catch (merr) {
+          console.warn('[upload] sharp metadata failed:', merr && merr.message);
+        }
+        console.log('[upload] image metadata:', meta && meta.format, meta && meta.width, meta && meta.height);
+
+        if (meta && String(meta.format || '').toLowerCase().includes('heif')) {
+          // convert HEIC/HEIF to JPEG for broader compatibility
+          const base = fileName.replace(/\.[^/.]+$/, '');
+          const newName = base + '.jpg';
+          const newPath = path.join(localDir, newName);
+          try {
+            await sharp(buf).jpeg({ quality: 85 }).toFile(newPath);
+            finalPath = newPath;
+            fileName = newName;
+            try { fs.unlinkSync(localPath); } catch(_){}
+            console.log('[upload] converted HEIC -> JPG:', newName);
+          } catch (convErr) {
+            console.warn('[upload] conversion failed:', convErr && convErr.message);
+          }
+        }
+      } catch (e) {
+        console.warn('[upload] post-process failed:', e && e.message);
+      }
+      const bufToUpload = fs.readFileSync(finalPath);
+
+      if (GITHUB_REPO && GITHUB_TOKEN) {
+        const repoPath = `${GITHUB_ASSETS_BASE}/${cardId}/${fileName}`;
+        const r = await githubUpsertFile(repoPath, bufToUpload, `Asset: ${cardId}/${fileName}`);
+        log('upload', 'GitHub asset saved:', r.rawUrl);
+        return res.json({ ok: true, url: r.rawUrl, path: repoPath, storage: 'github' });
+      }
+
+      const rel = `/assets/${cardId}/${fileName}`;
+      const abs = (APP_URL || '').replace(/\/$/,'') + rel;
+      log('upload', 'Local asset saved:', abs);
+      return res.json({ ok: true, url: abs, path: rel, storage: 'local' });
+
+    } catch (e) {
+      err('upload', e.message);
+      return res.status(500).json({ ok: false, error: e.message });
+    }
+  });
+});
 
 function parseBtn(line) {
   const [t, u] = (line || '').split('|');
@@ -273,7 +499,7 @@ function pickLargestPhoto(sizes) {
   return sizes.reduce((a, b) => (a.file_size || 0) > (b.file_size || 0) ? a : b);
 }
 
-app.post('/lead', async (req, res) => {
+app.post(['/lead', '/api/lead'], async (req, res) => {
   try {
     const data = req.body;
     console.log('\n==== [lead received] ====');
@@ -283,23 +509,36 @@ app.post('/lead', async (req, res) => {
       return res.status(400).json({ ok: false, error: 'ADMIN_CHAT_IDS is empty' });
     }
 
+    if (!bot || !bot.telegram || typeof bot.telegram.sendMessage !== 'function') {
+      console.warn('[lead] bot.telegram not ready');
+      return res.status(503).json({ ok: false, error: 'bot_not_ready' });
+    }
+
     const stamp = new Date().toLocaleString('ru-RU');
     let html = '';
+    const unameRaw = data?.username || ctx.from?.username || null;
+    const unameAt = unameRaw ? `@${String(unameRaw).replace(/^@/, '')}` : null;
+
 
     if (data.action === 'send_request_form') {
       html =
         `📄 <b>Заявка (форма)</b>\n` +
         `<b>Имя:</b> ${fmt(data.name)}\n` +
+        `<b>Юзернейм:</b> ${fmt(unameAt)}\n` +
         `<b>Телефон:</b> ${fmt(data.phone)}\n` +
         (data.comment ? `<b>Комментарий:</b> ${fmt(data.comment)}\n` : '') +
         (data.service ? `<b>Услуга:</b> ${fmt(data.service)}\n` : '');
     } 
     else if (data.action === 'consult') {
+      const contact = data.contact || data.phone || null;
+      const comment = data.message || data.comment || null;
+
       html =
-        `💬 <b>Запрос консультации</b>\n` +
+        `💬 <b>Связаться с разработчиком</b>\n` +
         `<b>Имя:</b> ${fmt(data.name)}\n` +
-        `<b>Контакт:</b> ${fmt(data.contact)}\n` +
-        (data.message ? `<b>Комментарий:</b> ${fmt(data.message)}\n` : '');
+        `<b>Юзернейм:</b> ${fmt(unameAt)}\n` +
+        `<b>Контакт:</b> ${fmt(contact)}\n` +
+        (comment ? `<b>Комментарий:</b> ${fmt(comment)}\n` : '');
     }
     else {
       html =
@@ -318,11 +557,30 @@ app.post('/lead', async (req, res) => {
   }
 });
 
+// Express error handler — catch any uncaught errors in middleware/routes
+app.use((err, req, res, next) => {
+  console.error('[express] unhandled error:', err && err.stack ? err.stack : err);
+  try { res.status(500).json({ ok: false, error: err && err.message ? err.message : 'internal_error' }); } catch(e){}
+});
+
+// Global process-level handlers to avoid server crash and to log details
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('[process] unhandledRejection:', reason instanceof Error ? reason.stack : reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('[process] uncaughtException:', err && err.stack ? err.stack : err);
+});
+
 async function sendPost({ chatId, threadId, text, photoFileId }, tg) {
+  const buttonUrl = ensurePostButtonUrl(BOT_USERNAME);
+  // Используем web_app для открытия TMA внутри Telegram, как в личном чате
+  const button = FRONTEND_URL
+    ? { text: POST_BUTTON_TEXT, web_app: { url: FRONTEND_URL } }
+    : { text: POST_BUTTON_TEXT, url: buttonUrl };
   const baseExtra = {
     parse_mode: 'HTML',
     disable_web_page_preview: false,
-    reply_markup: { inline_keyboard: [[{ text: POST_BUTTON_TEXT, url: POST_BUTTON_URL }]] }
+    reply_markup: { inline_keyboard: [[button]] }
   };
 
   const tryOnce = async (withThread) => {
@@ -332,17 +590,16 @@ async function sendPost({ chatId, threadId, text, photoFileId }, tg) {
   };
 
   try {
-    return await tryOnce(true);   // пробуем с threadId (если задан)
+    return await tryOnce(true);
   } catch (e) {
     const m = String(e.description || e.message || '').toLowerCase();
     const threadProblem = m.includes('message_thread_id') || m.includes('topic') || m.includes('forum') || m.includes('thread');
     if (threadId && threadProblem) {
-      return await tryOnce(false); // канал без топиков — повтор без threadId
+      return await tryOnce(false); 
     }
     throw e;
   }
 }
-
 
 app.get('/', (req, res) => res.send('Bot is running'));
 app.get('/debug', async (req, res) => {
@@ -358,24 +615,435 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, async () => {
   console.log(`🚀 Server running on port ${PORT}`);
 
-  if (APP_URL) {
-    const webhookUrl = `${APP_URL}/bot`;
-    try {
-      const info = await bot.telegram.getWebhookInfo();
+  try {
+    await bot.telegram.deleteWebhook();
+    await bot.launch();
 
-      if (info.url !== webhookUrl) {
-        await bot.telegram.setWebhook(webhookUrl);
-        console.log(`✅ Webhook установлен: ${webhookUrl}`);
-      } else {
-        console.log(`ℹ️ Webhook уже актуален: ${webhookUrl}`);
-      }
-
-      const me = await bot.telegram.getMe();
-      console.log(`[bot] logged in as @${me.username}, id=${me.id}`);
-      console.log(`[bot] ADMIN_CHAT_IDS =`, ADMIN_CHAT_IDS);
-    } catch (e) {
-      console.error('❌ Failed to set webhook automatically:', e.message);
+    const me = await bot.telegram.getMe();
+    BOT_USERNAME = BOT_USERNAME || me?.username || null;
+    if (BOT_USERNAME) {
+      ensurePostButtonUrl(BOT_USERNAME);
+      console.log(`[bot] post button → ${POST_BUTTON_URL}`);
     }
+    console.log(`[bot] logged in as @${me.username}, id=${me.id}`);
+    console.log(`[bot] ADMIN_CHAT_IDS =`, ADMIN_CHAT_IDS);
+  } catch (e) {
+    console.error('❌ Failed to launch bot:', e.message);
+  }
+
+  try {
+    await syncProductsFromGitHubToLocal();
+  } catch (e) {
+    console.warn('syncProductsFromGitHubToLocal error', e.message);
   }
 });
 
+// ===============================Локальное хранилище для products.json ===============================
+const PRODUCTS_FILE = path.join(__dirname, 'products.json');
+function loadProductsFile(){
+  try{ if (fs.existsSync(PRODUCTS_FILE)) return JSON.parse(fs.readFileSync(PRODUCTS_FILE,'utf8')); }catch(e){ console.warn('loadProductsFile error', e.message); }
+  return [];
+}
+
+function saveProductsFile(data){  
+  try{
+    fs.writeFileSync(PRODUCTS_FILE, JSON.stringify(data, null, 2), 'utf8');
+    return true;
+  }catch(e){
+    console.warn('saveProductsFile error', e.message);
+    return false;
+  }
+}
+
+// ===============================GitHub интеграция для products.json ===============================
+const GITHUB_TOKEN = process.env.GITHUB_TOKEN || '';
+const GITHUB_REPO = process.env.GITHUB_REPO || '';
+const GITHUB_PRODUCTS_PATH = process.env.GITHUB_PRODUCTS_PATH || 'products.json';
+const GITHUB_COMMIT_BRANCH = process.env.GITHUB_COMMIT_BRANCH || 'main';
+const GITHUB_COMMIT_MESSAGE = process.env.GITHUB_COMMIT_MESSAGE || 'Update products.json via backend';
+
+async function githubGetFileContent(){
+  if (!GITHUB_TOKEN || !GITHUB_REPO) return null;
+  try{
+    const [owner, repo] = GITHUB_REPO.split('/');
+    const url = `https://api.github.com/repos/${owner}/${repo}/contents/${encodeURIComponent(GITHUB_PRODUCTS_PATH)}?ref=${encodeURIComponent(GITHUB_COMMIT_BRANCH)}`;
+    const res = await fetch(url, { headers: { Authorization: `token ${GITHUB_TOKEN}`, Accept: 'application/vnd.github.v3+json' } });
+    if (!res.ok) { console.warn('githubGetFileContent: not ok', res.status); return null; }
+    const j = await res.json();
+    if (!j || !j.content) return null;
+    const content = Buffer.from(j.content, 'base64').toString('utf8');
+    return { content, sha: j.sha };
+  }catch(e){ console.warn('githubGetFileContent error', e.message); return null; }
+}
+
+async function githubPutFileContent(textContent, sha){
+  if (!GITHUB_TOKEN || !GITHUB_REPO) return null;
+  try{
+    const [owner, repo] = GITHUB_REPO.split('/');
+    const url = `https://api.github.com/repos/${owner}/${repo}/contents/${encodeURIComponent(GITHUB_PRODUCTS_PATH)}`;
+    const payload = {
+      message: GITHUB_COMMIT_MESSAGE,
+      content: Buffer.from(textContent, 'utf8').toString('base64'),
+      branch: GITHUB_COMMIT_BRANCH,
+      sha: sha || undefined
+    };
+    const res = await fetch(url, {
+      method: 'PUT',
+      headers: { Authorization: `token ${GITHUB_TOKEN}`, Accept: 'application/vnd.github.v3+json', 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    if (!res.ok) { console.warn('githubPutFileContent: not ok', res.status); return null; }
+    const j = await res.json();
+    return { ok:true, sha: j.content?.sha };
+  }catch(e){ console.warn('githubPutFileContent error', e.message); return null; }
+}
+
+async function syncProductsFromGitHubToLocal() {
+  const url = "https://raw.githubusercontent.com/Wardrod-Mine/TMA_Pictures_Server/main/products.json";
+
+  try {
+      const res = await fetch(url);
+      if (!res.ok) {
+          console.warn("[SYNC] GitHub returned error:", res.status);
+          return;
+      }
+
+      const ghText = await res.text();
+      if (!ghText.trim()) {
+          console.warn("[SYNC] GitHub returned empty file");
+          return;
+      }
+
+      const localList = loadProductsFile();
+      const ghList = JSON.parse(ghText);
+
+      const localHash = crypto.createHash("md5").update(JSON.stringify(localList)).digest("hex");
+      const ghHash = crypto.createHash("md5").update(JSON.stringify(ghList)).digest("hex");
+
+      if (localHash !== ghHash) {
+          saveProductsFile(ghList);
+          console.log("✔ products.json обновлён из GitHub");
+      } else {
+          console.log("ℹ products.json актуален, обновление не требуется");
+      }
+  } catch (e) {
+      console.error("[SYNC] Ошибка:", e.message);
+  }
+}
+
+function verifyInitData(initDataString) {
+  try {
+    if (!BOT_TOKEN || !initDataString) return null;
+
+    const params = new URLSearchParams(initDataString);
+
+    const hash = params.get('hash');
+    if (!hash) return null;
+
+    // data-check-string: все поля, кроме hash и signature, отсортированные по ключу
+    const pairs = [];
+    for (const [k, v] of params.entries()) {
+      if (k === 'hash' || k === 'signature') continue;
+      pairs.push([k, v]);
+    }
+    pairs.sort(([a], [b]) => a.localeCompare(b));
+
+    const dataCheckString = pairs.map(([k, v]) => `${k}=${v}`).join('\n');
+
+    // secret_key = HMAC_SHA256("WebAppData", bot_token)
+    const secretKey = crypto.createHmac('sha256', 'WebAppData').update(BOT_TOKEN).digest();
+    const calcHash = crypto.createHmac('sha256', secretKey).update(dataCheckString).digest('hex');
+
+    if (calcHash !== hash) return null;
+
+    // user_id достаём из user (JSON) либо user_id
+    let user_id = null;
+    const userStr = params.get('user');
+    if (userStr) {
+      try { user_id = JSON.parse(userStr)?.id ?? null; } catch (_) {}
+    }
+    if (!user_id && params.get('user_id')) user_id = Number(params.get('user_id'));
+
+    return { ok: true, user_id, data: Object.fromEntries(params.entries()) };
+  } catch (e) {
+    return null;
+  }
+}
+
+// Попытка извлечь user id из запроса: безопасный init_data или небезопасный init_data_unsafe
+function extractUserIdFromRequest(req){
+  try{
+    const fromHeader = req.headers['telegram-init-data'];
+    const fromBody = req.body?.init_data || req.body?.initData || req.body?.init_data_unsafe || req.body?.init_data_unsafe_raw;
+    const init = fromHeader || fromBody || '';
+
+    if (init && typeof init === 'string'){
+      const v = verifyInitData(init);
+      if (v) {
+        if (v.user_id) return Number(v.user_id);
+        if (v.data && v.data.user) try { return Number(JSON.parse(v.data.user).id); } catch(e){}
+        if (v.user && v.user.id) return Number(v.user.id);
+      }
+    }
+
+    const unsafe = req.body?.init_data_unsafe || req.body?.initDataUnsafe || req.body?.init_data_unsafe_raw || (req.body && req.body.init_data && typeof req.body.init_data === 'string' && req.body.init_data.includes('user=') && req.body.init_data);
+    if (unsafe) {
+      try{
+        if (typeof unsafe === 'object' && unsafe.user) {
+          const uid = unsafe.user.id || (unsafe.user && unsafe.user.id);
+          if (uid) return Number(uid);
+        }
+        const kv = Object.fromEntries(new URLSearchParams(String(unsafe)));
+        if (kv.user) {
+          const u = JSON.parse(kv.user);
+          if (u && u.id) return Number(u.id);
+        }
+      }catch(e){}
+    }
+
+    if (process.env.ALLOW_UNSAFE_ADMIN === 'true'){
+      const s = req.body?.init_data || req.headers['telegram-init-data'] || '';
+      if (s && typeof s === 'string'){
+        try{
+          const kv = Object.fromEntries(new URLSearchParams(s));
+          if (kv.user) {
+            const u = JSON.parse(kv.user);
+            if (u && u.id) return Number(u.id);
+          }
+        }catch(e){}
+      }
+    }
+
+  }catch(e){ console.warn('extractUserIdFromRequest error', e.message); }
+  return null;
+}
+
+// ======= Проверка администратора (простой) =======
+app.post(['/check_admin', '/api/check_admin'], express.json(), (req, res) => {
+  try {
+    const initData = req.headers['telegram-init-data'] || req.body?.init_data || '';
+    let userId = null;
+    if (initData && typeof initData === 'string' && initData.includes('user')) {
+      try {
+        const kv = Object.fromEntries(new URLSearchParams(initData));
+        if (kv.user) {
+          const user = JSON.parse(kv.user);
+          userId = Number(user.id);
+        }
+      } catch {}
+    }
+
+    if (userId && ADMIN_CHAT_IDS.includes(userId)) {
+      return res.json({ ok: true, isAdmin: true });
+    }
+    res.json({ ok: true, isAdmin: false });
+  } catch (e) {
+    console.error('/check_admin error', e.message);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// ======= Проверка администратора (расширенная) =======
+app.get(['/check_admin', '/api/check_admin'], async (req, res) => {
+  try {
+    const init_data = req.query.init_data;
+    const unsafe = req.query.unsafe === 'true';
+
+    const v = verifyInitData(init_data);
+    let uid = null;
+    if (v) {
+      uid = v.user_id
+        ?? (v.data?.user ? JSON.parse(v.data.user).id : null)
+        ?? v.data?.user_id
+        ?? null;
+      log('check_admin', 'Verified uid:', uid);
+    } else {
+      warn('check_admin', 'Invalid init_data, fallback:', unsafe);
+    }
+
+    if (!uid) {
+      if (process.env.ALLOW_UNSAFE_ADMIN === 'true') {
+        return res.json({ ok: true, isAdmin: true, admin: true });
+      }
+      return res.status(403).json({ ok: false, error: 'invalid_init_data' });
+    }
+
+    const adminIds = (process.env.ADMIN_CHAT_IDS || '')
+      .split(/[,\s]+/).map(s => s.trim()).filter(Boolean);
+    const isAdmin = adminIds.includes(String(uid));
+
+    log('check_admin', `Admin check for ${uid}: ${isAdmin}`);
+    return res.json({ ok: true, isAdmin: isAdmin, admin: isAdmin });
+  } catch (e) {
+    err('check_admin', e);
+    return res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+
+app.get(['/products', '/api/products'], (req, res) => {
+  try{
+    const list = loadProductsFile();
+    return res.json({ ok:true, products: list });
+  }catch(e){ console.error('GET /products error', e.message); return res.status(500).json({ ok:false }); }
+});
+
+app.post(['/products', '/api/products'], express.json(), async (req, res) => {
+  try {
+    const product = req.body?.product;
+    const initData =
+      req.headers['telegram-init-data'] ||
+      req.body?.init_data ||
+      '';
+
+    log('products', 'Incoming product:', product?.id || '(no id)');
+
+    const v = verifyInitData(initData);
+
+    let uid = null;
+    if (v?.user?.id) uid = Number(v.user.id);
+    if (!uid && typeof initData === 'string' && initData.includes('user=')) {
+      try {
+        const kv = Object.fromEntries(new URLSearchParams(initData));
+        if (kv.user) uid = Number(JSON.parse(kv.user).id);
+      } catch {}
+    }
+
+    if (!uid || !ADMIN_CHAT_IDS.includes(uid)) {
+      warn('products', 'Invalid init_data');
+      return res.status(403).json({ ok: false, error: 'invalid_init_data' });
+    }
+
+    const adminIds = (process.env.ADMIN_CHAT_IDS || '')
+      .split(/[,\s]+/).map(s => s.trim()).filter(Boolean);
+    const isAdmin = adminIds.includes(String(uid)) || uid === 'unsafe-admin';
+    if (!isAdmin) {
+      warn('products', `User ${uid} is not admin`);
+      return res.status(403).json({ ok: false, error: 'not_admin' });
+    }
+    if (!product || typeof product !== 'object' || !product.id) {
+      warn('products', 'Invalid product data');
+      return res.status(400).json({ ok: false, error: 'invalid_product' });
+    }
+
+    const list = loadProductsFile();
+    const i = list.findIndex(p => p.id === product.id);
+    if (i >= 0) list[i] = product; else list.push(product);
+
+    log('products', 'Upserting product:', product.id, 'title:', product.title);
+    const ok = saveProductsFile(list);
+    log('products', `File write ${ok ? 'OK' : 'FAIL'}. Total: ${list.length}`);
+
+    (async () => {
+      try {
+        const txt = JSON.stringify(list, null, 2);
+        const f = await githubGetFileContent();
+        const sha = f && f.sha ? f.sha : undefined;
+        const p = await githubPutFileContent(txt, sha);
+        if (!p.ok) console.warn('github push failed', p.error);
+        else console.log('products.json pushed to GitHub');
+      } catch (e) {
+        console.warn('push products to github error', e.message);
+      }
+    })();
+    return res.json({ ok: true, product });
+
+  } catch (e) {
+    err('products', e);
+    return res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// ======================== Удаление карточек =========================
+app.delete(['/products/:id', '/api/products/:id'], express.json(), (req, res) => {
+  try{
+    const uid = extractUserIdFromRequest(req);
+    if (!uid || !ADMIN_CHAT_IDS.includes(Number(uid))) return res.status(403).json({ ok:false, error:'not_admin' });
+    const id = String(req.params.id || '').trim();
+    if (!id) return res.status(400).json({ ok:false, error:'bad_id' });
+
+    let list = loadProductsFile();
+    const exists = list.some(x => x.id === id);
+    if (!exists) return res.status(404).json({ ok: false, error: 'not_found' });
+
+    list = list.filter(x=>x.id!==id);
+    const ok = saveProductsFile(list);
+    (async ()=>{
+      try{ const txt = JSON.stringify(list, null, 2); const f = await githubGetFileContent(); const sha = f && f.sha ? f.sha : undefined; const p = await githubPutFileContent(txt, sha); if (!p.ok) console.warn('github push failed', p.error); else console.log('products.json pushed to GitHub'); }catch(e){ console.warn('push products to github error', e.message); }
+    })();
+    return res.json({ ok: Boolean(ok) });
+  }catch(e){ console.error('DELETE /products error', e.message); return res.status(500).json({ ok:false }); }
+});
+
+// ======================== Редактирование карточек =========================
+app.patch(['/products/:id', '/api/products/:id'], express.json(), (req, res) => {
+  try{
+    const { init_data, updates } = req.body || {};
+    const v = verifyInitData(init_data);
+    if (!v) return res.status(403).json({ ok:false, error:'invalid_init_data' });
+    const uid = v.user_id || (v.data && (v.data.user_id || v.data.user && JSON.parse(v.data.user).id));
+    if (!uid || !ADMIN_CHAT_IDS.includes(Number(uid))) return res.status(403).json({ ok:false, error:'not_admin' });
+    const id = req.params.id;
+    let list = loadProductsFile();
+    const idx = list.findIndex(p => p.id === id);
+    if (idx === -1) return res.status(404).json({ ok:false, error:'not_found' });
+    const prod = list[idx];
+    for (const k of Object.keys(updates || {})) {
+      prod[k] = updates[k];
+    }
+    saveProductsFile(list);
+    (async ()=>{
+      try{ const txt = JSON.stringify(list, null, 2); const f = await githubGetFileContent(); const sha = f && f.sha ? f.sha : undefined; const p = await githubPutFileContent(txt, sha); if (!p.ok) console.warn('github push failed', p.error); else console.log('products.json pushed to GitHub'); }catch(e){ console.warn('push products to github error', e.message); }
+    })();
+    return res.json({ ok:true, product: prod });
+  }catch(e){ console.error('PATCH /products error', e.message); return res.status(500).json({ ok:false }); }
+});
+
+// ======================== Удаление изображений =========================
+app.delete(['/images', '/api/images'], express.json(), async (req, res) => {
+  try{
+    const { public_id, path: imgPath, productId } = req.body || {};
+    const uid = extractUserIdFromRequest(req);
+    if (!uid || !ADMIN_CHAT_IDS.includes(Number(uid))) return res.status(403).json({ ok:false, error:'not_admin' });
+
+    let deleted = false;
+
+    if (imgPath && String(imgPath).startsWith('/assets/')) {
+      try{
+        const rel = imgPath.replace(/^\//,'');
+        const abs = path.join(__dirname, rel);
+        if (fs.existsSync(abs)) { fs.unlinkSync(abs); deleted = true; }
+      }catch(e){
+        console.error('local delete failed', e && e.stack ? e.stack : e);
+      }
+    }
+
+    if (deleted && productId) {
+      const list = loadProductsFile();
+      const idx = list.findIndex(p => p.id === productId);
+      if (idx !== -1) {
+        const prod = list[idx];
+        if (Array.isArray(prod.imgs)) {
+          prod.imgs = prod.imgs.filter(img => img.path !== imgPath && img.public_id !== public_id);
+          saveProductsFile(list);
+          (async ()=>{
+            try{ const txt = JSON.stringify(list, null, 2); const f = await githubGetFileContent(); const sha = f && f.sha ? f.sha : undefined; const p = await githubPutFileContent(txt, sha); if (!p.ok) console.warn('github push failed', p.error); else console.log('products.json pushed to GitHub'); }catch(e){ console.warn('push products to github error', e.message); }
+          })();
+        }
+      }
+    }
+    return res.json({ ok:true, deleted });
+  }catch(e){ console.error('DELETE /images error', e.message); return res.status(500).json({ ok:false, error: e.message }); }
+});
+
+// ======================== Deploy endpoint =========================
+app.post('/deploy', (req, res) => {
+  exec('/root/deploy/deploy.sh', (err, stdout, stderr) => {
+    if (err) {
+      console.error('DEPLOY ERROR:', err);
+      return res.status(500).send('Deploy failed');
+    }
+    console.log(stdout);
+    res.send('Deploy OK');
+  });
+});
